@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # bitcask-kv-go
 
 # 高性能
@@ -121,7 +120,3 @@ Bitcask ​**所有写入都是顺序追加**​（append-only），完全避免
 Bitcask 通过 **极简设计** 和 **对硬件特性的精准利用**，在保证持久化的同时，达到了与内存数据库同级的性能表现。
 
 天然具有历史版本的特性。
-=======
-# kv-project
-bitcask KV 存储项目 Go 语言实现
->>>>>>> 757c7ff (Initial commit)
