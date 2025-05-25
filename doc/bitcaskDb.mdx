@@ -1,0 +1,268 @@
+---
+title: "bitcask-db"
+publishedAt: "2025-5-8"
+summary: "DB层的实现"
+---
+
+## db
+
+一个基于 **Bitcask 模型** 的键值存储引擎，核心设计采用 **日志结构合并树（LSM-Tree 思想）** 的变种。以下分模块解析其核心机制：
+
+------
+
+### **1. 存储结构设计**
+
+- 数据文件：按固定大小切分（
+
+  ```
+  DataFileSize
+  ```
+
+  ），命名格式为 
+
+  ```
+  {fileId}.data
+  ```
+
+  - **活跃文件** (`activeFile`)：当前写入的文件
+  - **旧文件** (`olderFiles`)：只读的历史文件
+
+- 索引：内存中维护 
+
+  ```
+  key -> 文件位置的映射
+  ```
+
+  - 支持多种索引类型（B+Tree、哈希表等）
+
+- 目录结构：
+
+  ```markdown
+  /data_dir
+    ├── 0.data        # 旧数据文件
+    ├── 1.data        # 活跃文件
+    ├── LOCK          # 文件锁
+    └── INDEX         # 索引文件（如 B+Tree）
+  ```
+
+------
+
+### **2. 写入流程**
+
+```go
+func (db *DB) Put(key []byte, value []byte) error {
+    // 构造日志记录
+    logRecord := &data.LogRecord{Key: key, Value: value}
+    
+    // 追加写入文件
+    pos, _ := db.appendLogRecord(logRecord)
+    
+    // 更新内存索引
+    db.index.Put(key, pos)
+}
+```
+
+- **日志追加**：所有写操作以追加日志形式记录
+- **索引更新**：内存索引实时更新最新位置
+- **文件滚动**：当活跃文件写满时自动创建新文件
+
+------
+
+### **3. 读取流程**
+
+```go
+func (db *DB) Get(key []byte) ([]byte, error) {
+    // 查内存索引获取位置
+    pos := db.index.Get(key)
+    
+    // 根据位置读取文件
+    dataFile := selectFile(pos.Fid)
+    record, _ := dataFile.Read(pos.Offset)
+    
+    return record.Value
+}
+```
+
+- **索引查询**：O(1) 时间复杂度定位数据位置
+- **文件读取**：通过直接偏移量访问（随机读优化为顺序读）
+
+------
+
+### **4. 数据删除**
+
+```go
+func (db *DB) Delete(key []byte) error {
+    // 写入删除标记
+    logRecord := &data.LogRecord{Key: key, Type: Deleted}
+    
+    // 追加日志并更新索引
+    pos, _ := db.appendLogRecord(logRecord)
+    db.index.Delete(key)
+}
+```
+
+- **逻辑删除**：通过写入墓碑标记（`LogRecordDeleted`）
+- **空间回收**：在后续 Merge 操作中物理删除
+
+------
+
+### **5. 合并机制（Merge）**
+
+- **触发条件**：无效数据占比超过阈值（`DataFileMergeRatio`）
+
+- 操作步骤：
+
+  1. 创建临时目录写入有效数据
+  2. 生成新的 Hint 文件（索引快照）
+  3. 原子替换旧文件
+
+- **优势**：减少磁盘碎片，提升读取效率
+
+- #### 提问：无效数据占比是如何统计的
+
+- 在 Bitcask 模型中，**无效数据占比**通过跟踪被覆盖或删除的旧记录大小来统计。以下是具体实现机制：
+
+  ------
+
+  ### **1. 核心变量：reclaimSize**
+
+  - **作用**：累计所有被新数据覆盖或标记删除的旧记录大小
+  - 更新时机：
+    - **写入新值**时覆盖旧值 → 旧值大小计入 `reclaimSize`
+    - **删除键**时 → 旧值大小和墓碑标记大小均计入 `reclaimSize`
+
+  ```go
+  // Put 操作更新逻辑
+  oldPos := db.index.Put(key, newPos)
+  if oldPos != nil {
+      db.reclaimSize += int64(oldPos.Size) // 旧数据大小累加
+  }
+  
+  // Delete 操作更新逻辑
+  pos, _ := db.appendLogRecord(deleteMarker)
+  db.reclaimSize += int64(pos.Size)        // 墓碑标记大小累加
+  
+  oldPos, _ := db.index.Delete(key)
+  if oldPos != nil {
+      db.reclaimSize += int64(oldPos.Size) // 旧数据大小再次累加
+  }
+  ```
+
+  ------
+
+  ### **2. 统计细节**
+
+  #### (1) 写操作覆盖
+
+  - 当新值覆盖旧值时，内存索引更新前会获取旧值的位置信息
+  - 旧值对应文件中的记录大小被加入 `reclaimSize`
+
+  #### (2) 删除操作
+
+  - 删除操作写入**墓碑标记**（类型为 `LogRecordDeleted` 的记录）
+  - 墓碑标记自身大小计入 `reclaimSize`
+  - 同时删除索引时旧数据大小也计入 `reclaimSize`
+
+  #### (3) 启动时重建
+
+  - 数据库重启时遍历所有数据文件重建索引
+  - 遇到已失效的旧记录时，其大小会被重新累加到 `reclaimSize`
+
+  ```go
+  // 加载数据文件时的处理逻辑
+  updateIndex := func(key []byte, typ data.LogRecordType, pos *data.LogRecordPos) {
+      if typ == data.LogRecordDeleted {
+          oldPos, _ := db.index.Delete(key)
+          db.reclaimSize += int64(pos.Size) // 累加墓碑标记大小
+      } else {
+          oldPos := db.index.Put(key, pos)  // 覆盖旧值
+      }
+      if oldPos != nil {
+          db.reclaimSize += int64(oldPos.Size) // 累加旧值大小
+      }
+  }
+  ```
+
+  ------
+
+  ### **3. 占比计算**
+
+  - **总数据大小**：通过 `utils.DirSize()` 计算存储目录总占用
+  - **无效数据占比** = `reclaimSize / totalSize`
+
+  go
+
+  复制
+
+  ```go
+  totalSize, _ := utils.DirSize(db.options.DirPath)
+  ratio := float32(db.reclaimSize) / float32(totalSize)
+  if ratio < db.options.DataFileMergeRatio {
+      return ErrMergeRatioUnreached
+  }
+  ```
+
+  ------
+
+  ### **4. 合并后的重置**
+
+  - **Merge 操作**会将有效数据写入新文件，删除旧文件
+  - 合并完成后，`reclaimSize` **不会立即重置**，而是在下次启动时通过重新加载数据文件计算新的无效数据量
+
+  ------
+
+  ### **统计示例**
+
+  | 操作序列                 | reclaimSize 变化             | 说明                   |
+  | ------------------------ | ---------------------------- | ---------------------- |
+  | 写入 key=name, val=Alice | +0 (无旧数据)                | 首次写入无覆盖         |
+  | 更新 key=name, val=Bob   | +旧值"Alice"记录大小         | 覆盖旧值               |
+  | 删除 key=name            | +墓碑标记大小 +旧值"Bob"大小 | 写入删除标记并清理旧值 |
+  | Merge 后                 | 清零（旧文件删除后重启计算） | 无效数据已被物理清除   |
+
+  这种设计确保了统计的实时性，同时通过启动时重建保证数据恢复后的准确性。
+
+------
+
+### **6. 事务支持**
+
+- **序列号管理**：全局递增的 `seqNo`
+- **事务日志**：通过 `LogRecordTxnFinished` 标记事务边界
+- **恢复机制**：重启时重放未完成事务
+
+------
+
+### **7. 关键优化点**
+
+| 优化项         | 实现方式                                              |
+| -------------- | ----------------------------------------------------- |
+| **写入高性能** | 纯追加写入 + 顺序 IO                                  |
+| **读取高效**   | 内存索引 + 文件偏移直接访问                           |
+| **并发控制**   | 读写锁 (`sync.RWMutex`) + 文件锁 (`flock`) 多进程互斥 |
+| **数据安全**   | Sync 操作保证持久化（可配置每次写入或周期 Sync）      |
+| **快速启动**   | 通过 Hint 文件快速重建索引                            |
+
+------
+
+### **8. 统计与监控**
+
+```go
+type Stat struct {
+    KeyNum          uint  // 总键数
+    DataFileNum     uint  // 文件数量
+    ReclaimableSize int64 // 可回收空间
+    DiskSize        int64 // 磁盘占用
+}
+```
+
+- **统计维度**：通过 `db.Stat()` 暴露关键指标
+- **监控集成**：可扩展接入 Prometheus 等监控系统
+
+------
+
+### **9. 设计亮点**
+
+1. **日志结构写**：最大化利用磁盘顺序 IO 性能
+2. **内存索引**：将随机读转化为顺序读
+3. **Merge 机制**：平衡空间效率与访问性能
+4. **原子性保证**：通过文件替换和完成标记实现合并操作的原子性

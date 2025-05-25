@@ -1,0 +1,122 @@
+---
+title: "bitcask-DataFile"
+publishedAt: "2025-5-8"
+summary: "数据在磁盘文件中的组织"
+---
+
+### **核心结构：DataFile**
+
+```go
+type DataFile struct {
+    FileId    uint32         // 文件编号 (如 000000001.data)
+    WriteOff  int64          // 当前写入偏移量
+    IoManager fio.IOManager  // IO 管理器 (标准文件 IO 或内存映射)
+}
+```
+
+------
+
+### **核心功能解析**
+
+#### **1. 文件管理**
+
+- 文件命名规则：
+  - 数据文件：`{9位数字}.data` (如 `000000001.data`)
+  - Hint 文件：`hint-index`
+  - Merge 完成标记：`merge-finished`
+  - 事务序列号：`seq-no`
+- 文件操作：
+  - **多类型支持**：通过 `OpenHintFile`、`OpenMergeFinishedFile` 等函数打开不同类型的文件
+  - **跨 IO 类型切换**：`SetIOManager` 实现热切换 IO 策略（如从标准 IO 改为 MMap）
+
+#### **2. 数据写入**
+
+```go
+func (df *DataFile) Write(buf []byte) error {
+    n, err := df.IoManager.Write(buf) // 写入字节流
+    df.WriteOff += int64(n)           // 更新偏移量
+}
+```
+
+- **追加写入**：所有写操作均为顺序追加（体现日志结构特性）
+
+#### **3. 数据读取**
+
+```go
+func (df *DataFile) ReadLogRecord(offset int64) (*LogRecord, int64, error) {
+    // 读取 Header → 解码 → 校验 → 读取 Key/Value → CRC 校验
+}
+```
+
+- 关键流程：
+  1. **分段读取**：先读取固定 Header（CRC + 元数据），再读取 Key/Value
+  2. **CRC 校验**：对比头部存储的 CRC 与实际计算的 CRC
+  3. **防止脏读**：通过 `ErrInvalidCRC` 错误处理损坏数据
+
+#### **4. 编码格式**
+
+- **Header 结构**：
+
+  ```markdown
+  ┌───────────┬────────────┬─────────────┐
+  │ CRC (4B)  │ Type (1B)  │ KeySz (var) │  
+  ├───────────┼────────────┼─────────────┤
+  │ ValueSz   │  Padding   │             │ 
+  └───────────┴────────────┴─────────────┘
+  ```
+
+  采用变长编码（如 UVarint）压缩存储 Key 和 Value 的长度
+
+- **Hint 文件记录**：
+
+  ```go
+  // Key: 原始键；Value: 位置信息编码后的字节流
+  EncodeLogRecordPos(pos *LogRecordPos) -> []byte
+  ```
+
+#### **5. 校验机制**
+
+- **CRC32 校验**：保障数据完整性
+
+```go
+crc := getLogRecordCRC(logRecord, headerBuf[crc32.Size:headerSize])
+if crc != header.crc {
+    return ErrInvalidCRC
+}
+```
+
+------
+
+### **设计亮点**
+
+| 设计要点         | 具体实现                                                |
+| ---------------- | ------------------------------------------------------- |
+| **标准化接口**   | 通过 `fio.IOManager` 抽象 IO 操作，支持多种 IO 类型扩展 |
+| **空间优化**     | Header 使用变长编码减少元数据占用                       |
+| **错误处理**     | 独立的 CRC 校验和错误类型 (`ErrInvalidCRC`)             |
+| **高性能读取**   | 通过 `SetIOManager` 支持运行中切换为 MMap 提升读性能    |
+| **事务支持基础** | 通过 `WriteHintRecord` 实现索引持久化                   |
+
+------
+
+### **关键函数**
+
+1. `WriteHintRecord`：
+   - **功能**：将索引位置信息写入 Hint 文件
+   - **模式**：以追加方式写入编码后的索引记录
+   - **恢复效率**：重启时通过快速扫描 Hint 文件重建索引
+2. `ReadLogRecord`：
+   - **动态调整读取长度**：根据文件大小自适应避免越界读取
+   - **EOF 判断**：检测到全零 Header 返回 EOF
+
+------
+
+### **应用场景示例**
+
+**Merge 过程中的数据迁移**：
+
+1. 遍历旧数据文件中的每条记录
+2. 通过 `ReadLogRecord` 验证记录有效性
+3. 有效记录经重新编码后写入新文件
+4. 通过 `WriteHintRecord` 生成新的索引记录
+
