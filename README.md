@@ -1,3 +1,4 @@
+```mark
 bitcask-kv-go/
 ├── data/                 # 数据存储核心模块
 │   ├── log_record.go     ➤ 日志记录编码/解码（CRC校验、变长编码）
@@ -6,14 +7,15 @@ bitcask-kv-go/
 │   ├── btree.go          ➤ B+树索引实现（Put/Get/Delete）
 │   └── iterator.go       ➤ 索引迭代器（正向/反向遍历）
 ├── fio/                  # IO 抽象层
-│   ├── mmap.go           ➤ 内存映射 IO 实现 <mcsymbol name="MMap.Read" filename="mmap.go" path="d:\kv\kv-project\fio\mmap.go" startline="26" type="function"></mcsymbol>
+│   ├── mmap.go           ➤ 内存映射 IO 实现 
 │   └── file_io.go        ➤ 标准文件 IO 实现
 ├── doc/                  # 设计文档
 │   ├── bitcaskDb.mdx     ➤ 数据库架构设计（含 Merge 机制流程图）
 │   └── bitcaskWriteBatch.mdx ➤ 事务实现原理
 └── utils/                # 工具模块
-    ├── rand_kv.go        ➤ 测试数据生成工具 <mcsymbol name="RandomValue" filename="rand_kv.go" path="d:\kv\kv-project\utils\rand_kv.go" startline="20" type="function"></mcsymbol>
+    ├── rand_kv.go        ➤ 测试数据生成工具
     └── file.go           ➤ 磁盘空间检测实现
+```
 
 ### **关键技术特性**
 1. **日志结构存储**：通过 <mcfile name="log_record.go" path="d:\kv\kv-project\data\log_record.go"></mcfile> 实现 CRC 校验头和变长编码
