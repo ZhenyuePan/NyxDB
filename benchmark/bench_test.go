@@ -1,9 +1,9 @@
 package benchmark
 
 import (
-	"bitcask-go/db"
-	"bitcask-go/utils"
 	"math/rand"
+	"nyxdb/internel/db"
+	"nyxdb/internel/utils"
 	"os"
 	"testing"
 	"time"

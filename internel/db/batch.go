@@ -1,8 +1,8 @@
 package db
 
 import (
-	"bitcask-go/data"
 	"encoding/binary"
+	"nyxdb/internel/data"
 	"sync"
 	"sync/atomic"
 )

@@ -1,8 +1,8 @@
 package db
 
 import (
-	"bitcask-go/index"
 	"bytes"
+	"nyxdb/internel/index"
 )
 
 // Iterator 迭代器
@@ -71,7 +71,7 @@ func (it *Iterator) skipToNext() {
 
 	for ; it.indexIter.Valid(); it.indexIter.Next() {
 		key := it.indexIter.Key()
-		if prefixLen <= len(key) && bytes.Compare(it.options.Prefix, key[:prefixLen]) == 0 {
+		if prefixLen <= len(key) && bytes.Equal(it.options.Prefix, key[:prefixLen]) {
 			break
 		}
 	}

@@ -1,4 +1,4 @@
-module bitcask-go
+module nyxdb
 
 go 1.19
 

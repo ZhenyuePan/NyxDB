@@ -1,9 +1,10 @@
 package index
 
 import (
-	"bitcask-go/data"
-	"github.com/stretchr/testify/assert"
+	"nyxdb/internel/data"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestBTree_Put(t *testing.T) {

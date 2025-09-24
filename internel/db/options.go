@@ -1,6 +1,8 @@
 package db
 
-import "os"
+import (
+	"os"
+)
 
 type Options struct {
 	// 数据库数据目录
@@ -32,6 +34,9 @@ type Options struct {
 
 	// 当前节点地址
 	NodeAddress string
+
+	// 使用的路由算法类型
+	RouterType RouterType
 }
 
 // IteratorOptions 索引迭代器配置项
@@ -58,6 +63,16 @@ const (
 	BTree IndexerType = iota + 1
 )
 
+// RouterType 定义路由算法类型
+type RouterType = int8
+
+const (
+	// DirectHash 直接哈希路由
+	DirectHash RouterType = iota
+	// ConsistentHash 一致性哈希路由
+	ConsistentHash
+)
+
 var DefaultOptions = Options{
 	DirPath:            os.TempDir(),
 	DataFileSize:       256 * 1024 * 1024, // 256MB
@@ -69,6 +84,7 @@ var DefaultOptions = Options{
 	ClusterMode:        false,
 	ClusterAddresses:   []string{},
 	NodeAddress:        "",
+	RouterType:         DirectHash,
 }
 
 var DefaultIteratorOptions = IteratorOptions{

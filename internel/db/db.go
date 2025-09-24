@@ -1,13 +1,13 @@
 package db
 
 import (
-	"bitcask-go/data"
-	"bitcask-go/fio"
-	"bitcask-go/index"
-	"bitcask-go/utils"
 	"errors"
 	"fmt"
 	"io"
+	"nyxdb/internel/data"
+	"nyxdb/internel/fio"
+	"nyxdb/internel/index"
+	"nyxdb/internel/utils"
 	"os"
 	"path/filepath"
 	"sort"
@@ -121,7 +121,7 @@ func (db *DB) Close() error {
 		}
 		// 关闭索引
 		if err := db.index.Close(); err != nil {
-			panic(fmt.Sprintf("failed to close index"))
+			panic("failed to close index")
 		}
 	}()
 	if db.activeFile == nil {

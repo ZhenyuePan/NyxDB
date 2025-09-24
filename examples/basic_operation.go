@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bitcask-go/db"
 	"fmt"
+	"nyxdb/internel/db"
 )
 
 func main() {

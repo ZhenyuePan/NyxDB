@@ -1,9 +1,9 @@
 package db
 
 import (
-	"bitcask-go/data"
-	"bitcask-go/utils"
 	"io"
+	"nyxdb/internel/data"
+	"nyxdb/internel/utils"
 	"os"
 	"path"
 	"path/filepath"

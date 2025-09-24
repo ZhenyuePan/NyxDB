@@ -2,11 +2,12 @@ package index
 
 //index中封装CRUD以及迭代器
 import (
-	"bitcask-go/data"
 	"bytes"
-	"github.com/google/btree"
+	"nyxdb/internel/data"
 	"sort"
 	"sync"
+
+	"github.com/google/btree"
 )
 
 // BTree 索引，主要封装了 google 的 btree ku
