@@ -23,6 +23,15 @@ type Options struct {
 
 	//	数据文件合并的阈值
 	DataFileMergeRatio float32
+
+	// 是否启用集群模式
+	ClusterMode bool
+
+	// 集群节点地址
+	ClusterAddresses []string
+
+	// 当前节点地址
+	NodeAddress string
 }
 
 // IteratorOptions 索引迭代器配置项
@@ -57,6 +66,9 @@ var DefaultOptions = Options{
 	IndexType:          BTree,
 	MMapAtStartup:      true,
 	DataFileMergeRatio: 0.5,
+	ClusterMode:        false,
+	ClusterAddresses:   []string{},
+	NodeAddress:        "",
 }
 
 var DefaultIteratorOptions = IteratorOptions{

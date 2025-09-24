@@ -590,6 +590,9 @@ func (db *DB) loadSeqNo() error {
 		return err
 	}
 	record, _, err := seqNoFile.ReadLogRecord(0)
+	if err != nil {
+		return err
+	}
 	seqNo, err := strconv.ParseUint(string(record.Value), 10, 64)
 	if err != nil {
 		return err
