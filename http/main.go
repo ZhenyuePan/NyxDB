@@ -110,6 +110,8 @@ func handleStat(writer http.ResponseWriter, request *http.Request) {
 }
 
 func main() {
+	// 开始监听
+	log.Println("Starting HTTP server...")
 	// 注册处理方法
 	http.HandleFunc("/bitcask/put", handlePut)
 	http.HandleFunc("/bitcask/get", handleGet)
