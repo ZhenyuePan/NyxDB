@@ -102,11 +102,19 @@ func Open(options Options) (*DB, error) {
 		return nil, err
 	}
 
+	// 加载数据文件中的索引
+	if err := db.loadIndexFromDataFiles(); err != nil {
+		return nil, err
+	}
 	// 重置 IO 类型为标准文件 IO
 	if db.options.MMapAtStartup {
 		if err := db.resetIoType(); err != nil {
 			return nil, err
 		}
+	}
+
+	if err := db.loadSeqNo(); err != nil {
+		return nil, err
 	}
 
 	return db, nil
