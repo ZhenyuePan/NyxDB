@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"nyxdb/db"
+	"nyxdb/internel/db"
 	"os"
 )
 

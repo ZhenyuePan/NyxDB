@@ -33,7 +33,7 @@ type IndexType = int8
 const (
 	// Btree 索引
 	Btree IndexType = iota + 1
-	skiplist
+	Skiplist
 )
 
 // NewIndexer 根据类型初始化索引
@@ -41,8 +41,8 @@ func NewIndexer(typ IndexType, dirPath string, sync bool) Indexer {
 	switch typ {
 	case Btree:
 		return NewBTree()
-	//  case skiplist:
-	//	return NewSkipList()
+	case Skiplist:
+		return NewSkipList()
 	default:
 		panic("unsupported index type")
 	}
