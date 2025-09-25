@@ -60,7 +60,8 @@ type IndexerType = int8
 
 const (
 	// BTree 索引
-	BTree IndexerType = iota + 1
+	BTree IndexerType = iota
+	SkipList
 )
 
 // RouterType 定义路由算法类型
@@ -78,7 +79,7 @@ var DefaultOptions = Options{
 	DataFileSize:       256 * 1024 * 1024, // 256MB
 	SyncWrites:         false,
 	BytesPerSync:       0,
-	IndexType:          BTree,
+	IndexType:          SkipList,
 	MMapAtStartup:      true,
 	DataFileMergeRatio: 0.5,
 	ClusterMode:        false,
