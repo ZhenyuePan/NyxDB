@@ -86,26 +86,26 @@ func TestDB_WriteBatch2(t *testing.T) {
 	assert.Equal(t, uint64(2), db2.seqNo)
 }
 
-//func TestDB_WriteBatch3(t *testing.T) {
-//	opts := DefaultOptions
-//	//dir, _ := os.MkdirTemp("", "bitcask-go-batch-3")
-//	dir := "/tmp/bitcask-go-batch-3"
-//	opts.DirPath = dir
-//	db, err := Open(opts)
-//	//defer destroyDB(db)
-//	assert.Nil(t, err)
-//	assert.NotNil(t, db)
-//
-//	keys := db.ListKeys()
-//	t.Log(len(keys))
-//	//
-//	//wbOpts := DefaultWriteBatchOptions
-//	//wbOpts.MaxBatchNum = 10000000
-//	//wb := db.NewWriteBatch(wbOpts)
-//	//for i := 0; i < 500000; i++ {
-//	//	err := wb.Put(utils.GetTestKey(i), utils.RandomValue(1024))
-//	//	assert.Nil(t, err)
-//	//}
-//	//err = wb.Commit()
-//	//assert.Nil(t, err)
-//}
+func TestDB_WriteBatch3(t *testing.T) {
+	opts := DefaultOptions
+	dir, _ := os.MkdirTemp("", "bitcask-go-batch-3")
+	//dir = "/tmp/bitcask-go-batch-3"
+	opts.DirPath = dir
+	db, err := Open(opts)
+	defer destroyDB(db)
+	assert.Nil(t, err)
+	assert.NotNil(t, db)
+
+	keys := db.ListKeys()
+	t.Log(len(keys))
+
+	wbOpts := DefaultWriteBatchOptions
+	wbOpts.MaxBatchNum = 10000000
+	wb := db.NewWriteBatch(wbOpts)
+	for i := 0; i < 500000; i++ {
+		err := wb.Put(utils.GetTestKey(i), utils.RandomValue(1024))
+		assert.Nil(t, err)
+	}
+	err = wb.Commit()
+	assert.Nil(t, err)
+}

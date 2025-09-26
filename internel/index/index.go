@@ -32,7 +32,7 @@ type IndexType = int8
 
 const (
 	// Btree 索引
-	Btree IndexType = iota + 1
+	Btree IndexType = iota
 	Skiplist
 )
 

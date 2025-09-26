@@ -78,7 +78,7 @@ func Open(options Options) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(entries) == 0 {
+	if len(entries) == 0 || (len(entries) == 1 && entries[0].Name() == fileLockName) {
 		isInitial = true
 	}
 

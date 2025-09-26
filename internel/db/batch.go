@@ -21,7 +21,7 @@ type WriteBatch struct {
 
 // NewWriteBatch 初始化 WriteBatch
 func (db *DB) NewWriteBatch(opts WriteBatchOptions) *WriteBatch {
-	if !db.seqNoFileExists && !db.isInitial {
+	if !db.isInitial && !db.seqNoFileExists {
 		panic("cannot use write batch, seq no file not exists")
 	}
 	return &WriteBatch{

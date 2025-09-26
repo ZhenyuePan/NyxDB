@@ -60,7 +60,7 @@ type IndexerType = int8
 
 const (
 	// BTree 索引
-	BTree IndexerType = iota
+	Btree IndexerType = iota
 	SkipList
 )
 

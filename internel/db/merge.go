@@ -215,7 +215,7 @@ func (db *DB) loadMergeFiles() error {
 
 	nonMergeFileId, err := db.getNonMergeFileId(mergePath)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	// 删除旧的数据文件
@@ -237,6 +237,24 @@ func (db *DB) loadMergeFiles() error {
 			return err
 		}
 	}
+
+	// 更新数据库的文件引用状态
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	// 清空旧文件映射
+	db.olderFiles = make(map[uint32]*data.DataFile)
+	
+	// 重新加载数据文件
+	if err := db.loadDataFiles(); err != nil {
+		return err
+	}
+	
+	// 从 hint 文件重新加载索引
+	if err := db.loadIndexFromHintFile(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
