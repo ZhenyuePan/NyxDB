@@ -2,8 +2,8 @@ package benchmark
 
 import (
 	"math/rand"
-	"nyxdb/internel/db"
-	"nyxdb/internel/utils"
+	db "nyxdb/internal/engine"
+	"nyxdb/internal/utils"
 	"os"
 	"testing"
 	"time"
