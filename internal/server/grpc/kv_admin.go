@@ -2,6 +2,7 @@ package grpcserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"nyxdb/internal/cluster"
@@ -9,6 +10,8 @@ import (
 	api "nyxdb/pkg/api"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // KVService adapts Cluster operations to gRPC KV service.
@@ -24,6 +27,7 @@ type kvCluster interface {
 	ReadTxnGet([]byte, []byte) ([]byte, bool, error)
 	EndReadTxn([]byte) error
 	TriggerMerge(force bool) error
+	LeaderAddress() string
 }
 
 type KVService struct {
@@ -51,10 +55,18 @@ func (s *KVService) Get(ctx context.Context, req *api.GetRequest) (*api.GetRespo
 	}
 	val, err := s.cluster.GetLinearizable(ctx, req.Key)
 	if err != nil {
-		if err == db.ErrKeyNotFound {
+		switch {
+		case errors.Is(err, db.ErrKeyNotFound):
 			return &api.GetResponse{Found: false}, nil
+		case errors.Is(err, cluster.ErrNotLeader):
+			leader := s.cluster.LeaderAddress()
+			if leader != "" {
+				return nil, status.Errorf(codes.FailedPrecondition, "not leader; leader=%s", leader)
+			}
+			return nil, status.Error(codes.FailedPrecondition, "not leader")
+		default:
+			return nil, err
 		}
-		return nil, err
 	}
 	return &api.GetResponse{Value: val, Found: true}, nil
 }

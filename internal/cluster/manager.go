@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	db "nyxdb/internal/engine"
 	raftnode "nyxdb/internal/node"
@@ -46,8 +47,9 @@ type Cluster struct {
 	wg     sync.WaitGroup
 
 	// 读事务
-	readTxnMu sync.RWMutex
-	readTxns  map[string]*db.ReadTxn
+	readTxnMu  sync.RWMutex
+	readTxns   map[string]*readTxnEntry
+	readTxnTTL time.Duration
 }
 
 type peerAddress struct {
@@ -118,7 +120,8 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		cancel:       cancel,
 		nextCommitTs: database.MaxCommittedTs(),
 		transport:    transport,
-		readTxns:     make(map[string]*db.ReadTxn),
+		readTxns:     make(map[string]*readTxnEntry),
+		readTxnTTL:   time.Minute,
 	}
 
 	cluster.applier = replication.NewApplier(database)
@@ -176,9 +179,10 @@ func (c *Cluster) Start() error {
 	c.raftNode.Start(c.commitC, c.errorC)
 
 	// 启动后台处理协程
-	c.wg.Add(2)
+	c.wg.Add(3)
 	go c.handleCommits()
 	go c.handleErrors()
+	go c.runReadTxnCleaner()
 
 	return nil
 }
@@ -193,6 +197,22 @@ func (c *Cluster) Stop() error {
 	}
 
 	return c.db.Close()
+}
+
+// LeaderAddress returns the best-known leader address, or empty string if unknown.
+func (c *Cluster) LeaderAddress() string {
+	if c.raftNode == nil {
+		return ""
+	}
+	status := c.raftNode.Status()
+	leaderID := status.Lead
+	if leaderID == 0 {
+		return ""
+	}
+	c.membersMu.RLock()
+	addr := c.members[leaderID]
+	c.membersMu.RUnlock()
+	return addr
 }
 
 // Put 通过RAFT集群存储数据
@@ -244,6 +264,10 @@ func (c *Cluster) Get(key []byte) ([]byte, error) {
 // GetLinearizable 执行线性一致读
 func (c *Cluster) GetLinearizable(ctx context.Context, key []byte) ([]byte, error) {
 	if !c.IsLeader() {
+		leaderAddr := c.LeaderAddress()
+		if leaderAddr != "" {
+			return nil, fmt.Errorf("%w: leader=%s", ErrNotLeader, leaderAddr)
+		}
 		return nil, ErrNotLeader
 	}
 	index, err := c.raftNode.ReadIndex(ctx)
@@ -490,6 +514,11 @@ var (
 	ErrNotLeader       = errors.New("cluster: not leader")
 )
 
+type readTxnEntry struct {
+	txn       *db.ReadTxn
+	createdAt time.Time
+}
+
 func (c *Cluster) registerReadTxn(txn *db.ReadTxn) ([]byte, error) {
 	const handleSize = 16
 	handle := make([]byte, handleSize)
@@ -505,19 +534,22 @@ func (c *Cluster) registerReadTxn(txn *db.ReadTxn) ([]byte, error) {
 		if _, exists := c.readTxns[key]; exists {
 			continue
 		}
-		c.readTxns[key] = txn
+		c.readTxns[key] = &readTxnEntry{
+			txn:       txn,
+			createdAt: time.Now(),
+		}
 		return append([]byte(nil), handle...), nil
 	}
 }
 
 func (c *Cluster) borrowReadTxn(handle []byte) (*db.ReadTxn, func(), bool) {
 	c.readTxnMu.RLock()
-	txn, ok := c.readTxns[string(handle)]
+	entry, ok := c.readTxns[string(handle)]
 	if !ok {
 		c.readTxnMu.RUnlock()
 		return nil, nil, false
 	}
-	return txn, c.readTxnMu.RUnlock, true
+	return entry.txn, func() { c.readTxnMu.RUnlock() }, true
 }
 
 func (c *Cluster) deregisterReadTxn(handle []byte) *db.ReadTxn {
@@ -525,9 +557,51 @@ func (c *Cluster) deregisterReadTxn(handle []byte) *db.ReadTxn {
 	defer c.readTxnMu.Unlock()
 
 	key := string(handle)
-	txn, ok := c.readTxns[key]
+	entry, ok := c.readTxns[key]
 	if ok {
 		delete(c.readTxns, key)
 	}
-	return txn
+	if entry != nil {
+		return entry.txn
+	}
+	return nil
+}
+
+func (c *Cluster) runReadTxnCleaner() {
+	defer c.wg.Done()
+	interval := c.readTxnTTL / 2
+	if interval <= 0 {
+		interval = time.Second
+	}
+	if interval > 5*time.Second {
+		interval = 5 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			c.cleanupExpiredReadTxns()
+		case <-c.ctx.Done():
+			c.cleanupExpiredReadTxns()
+			return
+		}
+	}
+}
+
+func (c *Cluster) cleanupExpiredReadTxns() {
+	ttl := c.readTxnTTL
+	if ttl <= 0 {
+		ttl = time.Minute
+	}
+	now := time.Now()
+	c.readTxnMu.Lock()
+	for handle, entry := range c.readTxns {
+		if now.Sub(entry.createdAt) > ttl {
+			entry.txn.Close()
+			delete(c.readTxns, handle)
+		}
+	}
+	c.readTxnMu.Unlock()
 }

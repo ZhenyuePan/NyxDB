@@ -34,9 +34,13 @@ func (c *ServerConfig) EngineOptions() db.Options {
 	}
 	opts.EnableDiagnostics = c.Engine.EnableDiagnostics
 	if c.Cluster.ClusterMode {
+		nodeAddr := c.Cluster.NodeAddress
+		if nodeAddr == "" && c.GRPC.Address != "" {
+			nodeAddr = c.GRPC.Address
+		}
 		opts.ClusterConfig = &db.ClusterOptions{
 			ClusterMode:      true,
-			NodeAddress:      c.Cluster.NodeAddress,
+			NodeAddress:      nodeAddr,
 			RouterType:       db.DirectHash,
 			ClusterAddresses: c.Cluster.ClusterAddresses,
 		}

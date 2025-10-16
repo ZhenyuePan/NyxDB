@@ -10,6 +10,8 @@ import (
 	api "nyxdb/pkg/api"
 
 	"github.com/stretchr/testify/assert"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type fakeCluster struct {
@@ -18,6 +20,8 @@ type fakeCluster struct {
 	snapshots    map[string]map[string][]byte
 	nextHandleID uint64
 	mergeCount   int
+	leader       string
+	getErr       error
 }
 
 func newFakeCluster() *fakeCluster {
@@ -42,6 +46,9 @@ func (f *fakeCluster) Get(key []byte) ([]byte, error) {
 }
 
 func (f *fakeCluster) GetLinearizable(ctx context.Context, key []byte) ([]byte, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	return f.Get(key)
 }
 
@@ -106,6 +113,10 @@ func (f *fakeCluster) TriggerMerge(force bool) error {
 	return nil
 }
 
+func (f *fakeCluster) LeaderAddress() string {
+	return f.leader
+}
+
 func TestKVService_PutGetDelete(t *testing.T) {
 	cl := newFakeCluster()
 	svc := NewKVService(cl)
@@ -124,6 +135,20 @@ func TestKVService_PutGetDelete(t *testing.T) {
 	resp, err = svc.Get(context.Background(), &api.GetRequest{Key: []byte("k")})
 	assert.Nil(t, err)
 	assert.False(t, resp.Found)
+}
+
+func TestKVService_GetNotLeader(t *testing.T) {
+	cl := newFakeCluster()
+	cl.getErr = fmt.Errorf("%w: leader=%s", cluster.ErrNotLeader, "127.0.0.1:9002")
+	cl.leader = "127.0.0.1:9002"
+	svc := NewKVService(cl)
+
+	_, err := svc.Get(context.Background(), &api.GetRequest{Key: []byte("k")})
+	assert.Error(t, err)
+	st, ok := status.FromError(err)
+	assert.True(t, ok)
+	assert.Equal(t, codes.FailedPrecondition, st.Code())
+	assert.Contains(t, st.Message(), "leader=127.0.0.1:9002")
 }
 
 func TestKVService_ReadTxn(t *testing.T) {
