@@ -28,8 +28,9 @@ type Cluster struct {
 	transport rafttransport.Transport
 
 	// 集群成员管理
-	members   map[uint64]string // nodeID -> address
-	membersMu sync.RWMutex
+	members     map[uint64]string // nodeID -> address
+	membersMu   sync.RWMutex
+	memberStore *memberStore
 
 	commitMu     sync.Mutex
 	nextCommitTs uint64
@@ -122,8 +123,25 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 
 	cluster.applier = replication.NewApplier(database)
 
+	memberDir := filepath.Join(options.DirPath, "cluster")
+	store, err := newMemberStore(memberDir)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	cluster.memberStore = store
+
+	if err := cluster.restoreMembers(); err != nil {
+		cancel()
+		return nil, err
+	}
+
 	if options.ClusterConfig != nil && options.ClusterConfig.NodeAddress != "" {
-		_ = cluster.transport.AddMember(nodeID, []string{options.ClusterConfig.NodeAddress})
+		cluster.membersMu.Lock()
+		if cluster.members[nodeID] == "" {
+			cluster.members[nodeID] = options.ClusterConfig.NodeAddress
+		}
+		cluster.membersMu.Unlock()
 	}
 
 	storage, err := NewRaftStorage(filepath.Join(options.DirPath, "raft"))
@@ -140,6 +158,11 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		Transport:     cluster.transport,
 		ElectionTick:  10,
 		HeartbeatTick: 1,
+	}
+
+	if err := cluster.persistMembers(); err != nil {
+		cancel()
+		return nil, err
 	}
 
 	cluster.raftNode = raftnode.NewNode(raftConfig)
@@ -280,11 +303,6 @@ func (c *Cluster) IsLeader() bool {
 
 // AddMember 添加新成员到集群
 func (c *Cluster) AddMember(nodeID uint64, address string) error {
-	// 更新本地成员列表
-	c.membersMu.Lock()
-	c.members[nodeID] = address
-	c.membersMu.Unlock()
-
 	// 构造配置变更命令
 	cc := raftpb.ConfChange{
 		Type:    raftpb.ConfChangeAddNode,
@@ -298,11 +316,6 @@ func (c *Cluster) AddMember(nodeID uint64, address string) error {
 
 // RemoveMember 从集群中移除成员
 func (c *Cluster) RemoveMember(nodeID uint64) error {
-	// 从本地成员列表中移除
-	c.membersMu.Lock()
-	delete(c.members, nodeID)
-	c.membersMu.Unlock()
-
 	// 构造配置变更命令
 	cc := raftpb.ConfChange{
 		Type:   raftpb.ConfChangeRemoveNode,
@@ -334,6 +347,11 @@ func (c *Cluster) handleCommits() {
 		select {
 		case commit := <-c.commitC:
 			if commit == nil {
+				continue
+			}
+
+			if commit.ConfChange != nil {
+				c.applyConfChange(commit.ConfChange)
 				continue
 			}
 
@@ -371,19 +389,23 @@ func (c *Cluster) handleErrors() {
 
 // buildRaftPeers 根据配置构建RAFT peers
 func (c *Cluster) buildRaftPeers() []etcdraft.Peer {
-	cfg := c.options.ClusterConfig
-	if cfg == nil || !cfg.ClusterMode {
-		return nil
-	}
-	entries := parsePeerAddresses(cfg.ClusterAddresses)
-	peers := make([]etcdraft.Peer, 0, len(entries))
 	c.membersMu.Lock()
-	for _, p := range entries {
-		peers = append(peers, etcdraft.Peer{ID: p.id})
-		c.members[p.id] = p.addr
-		_ = c.transport.AddMember(p.id, []string{p.addr})
+	defer c.membersMu.Unlock()
+
+	if len(c.members) == 0 {
+		cfg := c.options.ClusterConfig
+		if cfg != nil && cfg.ClusterMode {
+			for _, p := range parsePeerAddresses(cfg.ClusterAddresses) {
+				c.members[p.id] = p.addr
+			}
+		}
 	}
-	c.membersMu.Unlock()
+
+	peers := make([]etcdraft.Peer, 0, len(c.members))
+	for id, addr := range c.members {
+		peers = append(peers, etcdraft.Peer{ID: id})
+		_ = c.transport.AddMember(id, []string{addr})
+	}
 	return peers
 }
 
@@ -408,6 +430,60 @@ func (c *Cluster) TriggerMerge(force bool) error {
 		Force:              force,
 		DiagnosticsContext: "admin-trigger",
 	})
+}
+
+func (c *Cluster) applyConfChange(cc *raftpb.ConfChange) {
+	switch cc.Type {
+	case raftpb.ConfChangeAddNode, raftpb.ConfChangeAddLearnerNode:
+		addr := string(cc.Context)
+		c.membersMu.Lock()
+		c.members[cc.NodeID] = addr
+		c.membersMu.Unlock()
+		_ = c.transport.AddMember(cc.NodeID, []string{addr})
+	case raftpb.ConfChangeRemoveNode:
+		c.membersMu.Lock()
+		delete(c.members, cc.NodeID)
+		c.membersMu.Unlock()
+		_ = c.transport.RemoveMember(cc.NodeID)
+	case raftpb.ConfChangeUpdateNode:
+		addr := string(cc.Context)
+		c.membersMu.Lock()
+		c.members[cc.NodeID] = addr
+		c.membersMu.Unlock()
+		_ = c.transport.AddMember(cc.NodeID, []string{addr})
+	}
+	if err := c.persistMembers(); err != nil {
+		fmt.Printf("failed to persist members: %v\n", err)
+	}
+}
+
+func (c *Cluster) restoreMembers() error {
+	if c.memberStore == nil {
+		return nil
+	}
+	stored, err := c.memberStore.Load()
+	if err != nil {
+		return err
+	}
+	c.membersMu.Lock()
+	for id, addr := range stored {
+		c.members[id] = addr
+	}
+	c.membersMu.Unlock()
+	return nil
+}
+
+func (c *Cluster) persistMembers() error {
+	if c.memberStore == nil {
+		return nil
+	}
+	c.membersMu.RLock()
+	snapshot := make(map[uint64]string, len(c.members))
+	for id, addr := range c.members {
+		snapshot[id] = addr
+	}
+	c.membersMu.RUnlock()
+	return c.memberStore.Save(snapshot)
 }
 
 var (

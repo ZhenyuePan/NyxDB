@@ -21,3 +21,7 @@ bitcask-kv-go/
 1. **日志结构存储**：通过 <mcfile name="log_record.go" path="d:\kv\kv-project\data\log_record.go"></mcfile> 实现 CRC 校验头和变长编码
 2. **混合 IO 模式**：在 <mcfile name="mmap.go" path="d:\kv\kv-project\fio\mmap.go"></mcfile> 中支持标准文件 IO 和内存映射的运行时切换
 3. **事务支持**：<mcfile name="bitcaskWriteBatch.mdx" path="d:\kv\kv-project\doc\bitcaskWriteBatch.mdx"></mcfile> 两阶段提交和序列号机制
+
+### **运行时生成的状态文件**
+- `raft/raft_state.bin`：记录 Raft HardState、快照元信息与日志条目，用于节点崩溃恢复。
+- `cluster/members.json`：持久化当前集群成员（nodeID → address），保证重启后成员列表与传输路由自动恢复。

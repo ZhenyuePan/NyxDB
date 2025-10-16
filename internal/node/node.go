@@ -41,9 +41,10 @@ type Node struct {
 
 // Commit 提交的数据
 type Commit struct {
-	Data  []byte
-	Index uint64
-	Term  uint64
+	Data       []byte
+	Index      uint64
+	Term       uint64
+	ConfChange *raftpb.ConfChange
 }
 
 // NodeConfig RAFT节点配置
@@ -235,8 +236,22 @@ func (n *Node) applyCommits(committedEntries []raftpb.Entry) {
 			}
 		case raftpb.EntryConfChange:
 			var cc raftpb.ConfChange
-			cc.Unmarshal(entry.Data)
+			if err := cc.Unmarshal(entry.Data); err != nil {
+				n.sendError(err)
+				continue
+			}
 			n.raftNode.ApplyConfChange(cc)
+			ccCopy := cc
+			commit := &Commit{
+				Index:      entry.Index,
+				Term:       entry.Term,
+				ConfChange: &ccCopy,
+			}
+			select {
+			case n.commitC <- commit:
+			case <-n.ctx.Done():
+				return
+			}
 		}
 
 		n.mu.Lock()
