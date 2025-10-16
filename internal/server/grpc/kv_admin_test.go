@@ -2,8 +2,10 @@ package grpcserver
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
+	"nyxdb/internal/cluster"
 	db "nyxdb/internal/engine"
 	api "nyxdb/pkg/api"
 
@@ -11,12 +13,19 @@ import (
 )
 
 type fakeCluster struct {
-	store   map[string][]byte
-	members map[uint64]string
+	store        map[string][]byte
+	members      map[uint64]string
+	snapshots    map[string]map[string][]byte
+	nextHandleID uint64
+	mergeCount   int
 }
 
 func newFakeCluster() *fakeCluster {
-	return &fakeCluster{store: make(map[string][]byte), members: make(map[uint64]string)}
+	return &fakeCluster{
+		store:     make(map[string][]byte),
+		members:   make(map[uint64]string),
+		snapshots: make(map[string]map[string][]byte),
+	}
 }
 
 func (f *fakeCluster) Put(key, value []byte) error {
@@ -55,6 +64,44 @@ func (f *fakeCluster) Members() map[uint64]string {
 	return cp
 }
 
+func (f *fakeCluster) BeginReadTxn() ([]byte, uint64, error) {
+	f.nextHandleID++
+	handle := []byte(fmt.Sprintf("h-%d", f.nextHandleID))
+	snap := make(map[string][]byte)
+	for k, v := range f.store {
+		snap[k] = append([]byte(nil), v...)
+	}
+	f.snapshots[string(handle)] = snap
+	return append([]byte(nil), handle...), uint64(f.nextHandleID), nil
+}
+
+func (f *fakeCluster) ReadTxnGet(handle []byte, key []byte) ([]byte, bool, error) {
+	snap, ok := f.snapshots[string(handle)]
+	if !ok {
+		return nil, false, cluster.ErrReadTxnNotFound
+	}
+	val, found := snap[string(key)]
+	if !found {
+		return nil, false, nil
+	}
+	return append([]byte(nil), val...), true, nil
+}
+
+func (f *fakeCluster) EndReadTxn(handle []byte) error {
+	if _, ok := f.snapshots[string(handle)]; !ok {
+		return cluster.ErrReadTxnNotFound
+	}
+	delete(f.snapshots, string(handle))
+	return nil
+}
+
+func (f *fakeCluster) TriggerMerge(force bool) error {
+	if force {
+		f.mergeCount++
+	}
+	return nil
+}
+
 func TestKVService_PutGetDelete(t *testing.T) {
 	cl := newFakeCluster()
 	svc := NewKVService(cl)
@@ -75,6 +122,37 @@ func TestKVService_PutGetDelete(t *testing.T) {
 	assert.False(t, resp.Found)
 }
 
+func TestKVService_ReadTxn(t *testing.T) {
+	cl := newFakeCluster()
+	_ = cl.Put([]byte("foo"), []byte("bar"))
+	svc := NewKVService(cl)
+
+	beginResp, err := svc.BeginReadTxn(context.Background(), &api.BeginReadTxnRequest{})
+	assert.NoError(t, err)
+	assert.NotEmpty(t, beginResp.Handle)
+	assert.NotZero(t, beginResp.ReadTs)
+
+	getResp, err := svc.ReadTxnGet(context.Background(), &api.ReadTxnGetRequest{
+		Handle: beginResp.Handle,
+		Key:    []byte("foo"),
+	})
+	assert.NoError(t, err)
+	assert.True(t, getResp.Found)
+	assert.Equal(t, []byte("bar"), getResp.Value)
+
+	_, err = svc.ReadTxnGet(context.Background(), &api.ReadTxnGetRequest{
+		Handle: beginResp.Handle,
+		Key:    []byte("missing"),
+	})
+	assert.NoError(t, err)
+
+	_, err = svc.EndReadTxn(context.Background(), &api.EndReadTxnRequest{Handle: beginResp.Handle})
+	assert.NoError(t, err)
+
+	_, err = svc.EndReadTxn(context.Background(), &api.EndReadTxnRequest{Handle: beginResp.Handle})
+	assert.Error(t, err)
+}
+
 func TestAdminService_JoinMembers(t *testing.T) {
 	cl := newFakeCluster()
 	adm := NewAdminService(cl)
@@ -93,4 +171,17 @@ func TestAdminService_JoinMembers(t *testing.T) {
 	resp, err = adm.Members(context.Background(), &api.MembersRequest{})
 	assert.Nil(t, err)
 	assert.Len(t, resp.Members, 0)
+}
+
+func TestAdminService_TriggerMerge(t *testing.T) {
+	cl := newFakeCluster()
+	adm := NewAdminService(cl)
+
+	_, err := adm.TriggerMerge(context.Background(), &api.TriggerMergeRequest{Force: true})
+	assert.NoError(t, err)
+	assert.Equal(t, 1, cl.mergeCount)
+
+	_, err = adm.TriggerMerge(context.Background(), &api.TriggerMergeRequest{Force: false})
+	assert.NoError(t, err)
+	assert.Equal(t, 1, cl.mergeCount)
 }

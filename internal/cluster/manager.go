@@ -2,6 +2,8 @@ package cluster
 
 import (
 	"context"
+	"crypto/rand"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -40,6 +42,10 @@ type Cluster struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// 读事务
+	readTxnMu sync.RWMutex
+	readTxns  map[string]*db.ReadTxn
 }
 
 type peerAddress struct {
@@ -110,6 +116,7 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		cancel:       cancel,
 		nextCommitTs: database.MaxCommittedTs(),
 		transport:    transport,
+		readTxns:     make(map[string]*db.ReadTxn),
 	}
 
 	cluster.applier = replication.NewApplier(database)
@@ -202,6 +209,46 @@ func (c *Cluster) RaftNode() *raftnode.Node {
 func (c *Cluster) Get(key []byte) ([]byte, error) {
 	// 读操作不需要通过RAFT，直接从本地数据库获取
 	return c.db.Get(key)
+}
+
+// BeginReadTxn 开启快照读事务并返回句柄与快照时间戳
+func (c *Cluster) BeginReadTxn() ([]byte, uint64, error) {
+	txn := c.db.BeginReadTxn()
+
+	handle, err := c.registerReadTxn(txn)
+	if err != nil {
+		txn.Close()
+		return nil, 0, err
+	}
+	return handle, txn.ReadTs(), nil
+}
+
+// ReadTxnGet 在指定读事务下读取数据
+func (c *Cluster) ReadTxnGet(handle []byte, key []byte) ([]byte, bool, error) {
+	txn, release, ok := c.borrowReadTxn(handle)
+	if !ok {
+		return nil, false, ErrReadTxnNotFound
+	}
+	defer release()
+
+	val, err := txn.Get(key)
+	if err != nil {
+		if errors.Is(err, db.ErrKeyNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return val, true, nil
+}
+
+// EndReadTxn 结束读事务
+func (c *Cluster) EndReadTxn(handle []byte) error {
+	txn := c.deregisterReadTxn(handle)
+	if txn == nil {
+		return ErrReadTxnNotFound
+	}
+	txn.Close()
+	return nil
 }
 
 // IsLeader 检查当前节点是否为Leader
@@ -333,10 +380,62 @@ func (c *Cluster) observeCommitTs(ts uint64) {
 	c.commitMu.Unlock()
 }
 
+// TriggerMerge 启动合并过程
+func (c *Cluster) TriggerMerge(force bool) error {
+	return c.db.MergeWithOptions(db.MergeOptions{
+		Force:              force,
+		DiagnosticsContext: "admin-trigger",
+	})
+}
+
 // RaftStorage RAFT存储实现
 type RaftStorage struct {
 	// 实现etcd/raft/v3/raftpb.Storage接口
 	// 这里需要根据实际存储需求实现
+}
+
+var ErrReadTxnNotFound = errors.New("cluster: read transaction not found")
+
+func (c *Cluster) registerReadTxn(txn *db.ReadTxn) ([]byte, error) {
+	const handleSize = 16
+	handle := make([]byte, handleSize)
+
+	c.readTxnMu.Lock()
+	defer c.readTxnMu.Unlock()
+
+	for {
+		if _, err := rand.Read(handle); err != nil {
+			return nil, err
+		}
+		key := string(handle)
+		if _, exists := c.readTxns[key]; exists {
+			continue
+		}
+		c.readTxns[key] = txn
+		return append([]byte(nil), handle...), nil
+	}
+}
+
+func (c *Cluster) borrowReadTxn(handle []byte) (*db.ReadTxn, func(), bool) {
+	c.readTxnMu.RLock()
+	txn, ok := c.readTxns[string(handle)]
+	if !ok {
+		c.readTxnMu.RUnlock()
+		return nil, nil, false
+	}
+	return txn, c.readTxnMu.RUnlock, true
+}
+
+func (c *Cluster) deregisterReadTxn(handle []byte) *db.ReadTxn {
+	c.readTxnMu.Lock()
+	defer c.readTxnMu.Unlock()
+
+	key := string(handle)
+	txn, ok := c.readTxns[key]
+	if ok {
+		delete(c.readTxns, key)
+	}
+	return txn
 }
 
 // NewRaftStorage 创建RAFT存储实例

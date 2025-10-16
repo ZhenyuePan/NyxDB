@@ -13,21 +13,25 @@ import (
 
 // KVService adapts Cluster operations to gRPC KV service.
 type kvCluster interface {
-    Put([]byte, []byte) error
-    Get([]byte) ([]byte, error)
-    Delete([]byte) error
-    AddMember(uint64, string) error
-    RemoveMember(uint64) error
-    Members() map[uint64]string
+	Put([]byte, []byte) error
+	Get([]byte) ([]byte, error)
+	Delete([]byte) error
+	AddMember(uint64, string) error
+	RemoveMember(uint64) error
+	Members() map[uint64]string
+	BeginReadTxn() ([]byte, uint64, error)
+	ReadTxnGet([]byte, []byte) ([]byte, bool, error)
+	EndReadTxn([]byte) error
+	TriggerMerge(force bool) error
 }
 
 type KVService struct {
-    api.UnimplementedKVServer
-    cluster kvCluster
+	api.UnimplementedKVServer
+	cluster kvCluster
 }
 
 func NewKVService(cl kvCluster) *KVService {
-    return &KVService{cluster: cl}
+	return &KVService{cluster: cl}
 }
 
 func (s *KVService) Put(ctx context.Context, req *api.PutRequest) (*api.PutResponse, error) {
@@ -65,25 +69,58 @@ func (s *KVService) Delete(ctx context.Context, req *api.DeleteRequest) (*api.De
 }
 
 func (s *KVService) BeginReadTxn(context.Context, *api.BeginReadTxnRequest) (*api.BeginReadTxnResponse, error) {
-	return nil, fmt.Errorf("read transactions not implemented")
+	if s.cluster == nil {
+		return nil, fmt.Errorf("cluster not available")
+	}
+	handle, readTs, err := s.cluster.BeginReadTxn()
+	if err != nil {
+		return nil, err
+	}
+	return &api.BeginReadTxnResponse{
+		ReadTs: readTs,
+		Handle: handle,
+	}, nil
 }
 
-func (s *KVService) ReadTxnGet(context.Context, *api.ReadTxnGetRequest) (*api.ReadTxnGetResponse, error) {
-	return nil, fmt.Errorf("read transactions not implemented")
+func (s *KVService) ReadTxnGet(ctx context.Context, req *api.ReadTxnGetRequest) (*api.ReadTxnGetResponse, error) {
+	if s.cluster == nil {
+		return nil, fmt.Errorf("cluster not available")
+	}
+	if len(req.Handle) == 0 {
+		return nil, fmt.Errorf("read transaction handle is empty")
+	}
+	value, found, err := s.cluster.ReadTxnGet(req.Handle, req.Key)
+	if err != nil {
+		return nil, err
+	}
+	resp := &api.ReadTxnGetResponse{Found: found}
+	if found {
+		resp.Value = value
+	}
+	return resp, nil
 }
 
-func (s *KVService) EndReadTxn(context.Context, *api.EndReadTxnRequest) (*api.EndReadTxnResponse, error) {
-	return nil, fmt.Errorf("read transactions not implemented")
+func (s *KVService) EndReadTxn(ctx context.Context, req *api.EndReadTxnRequest) (*api.EndReadTxnResponse, error) {
+	if s.cluster == nil {
+		return nil, fmt.Errorf("cluster not available")
+	}
+	if len(req.Handle) == 0 {
+		return nil, fmt.Errorf("read transaction handle is empty")
+	}
+	if err := s.cluster.EndReadTxn(req.Handle); err != nil {
+		return nil, err
+	}
+	return &api.EndReadTxnResponse{}, nil
 }
 
 // AdminService exposes cluster administration commands.
 type AdminService struct {
-    api.UnimplementedAdminServer
-    cluster kvCluster
+	api.UnimplementedAdminServer
+	cluster kvCluster
 }
 
 func NewAdminService(cl kvCluster) *AdminService {
-    return &AdminService{cluster: cl}
+	return &AdminService{cluster: cl}
 }
 
 func (s *AdminService) Join(ctx context.Context, req *api.JoinRequest) (*api.JoinResponse, error) {
@@ -119,7 +156,13 @@ func (s *AdminService) Members(ctx context.Context, req *api.MembersRequest) (*a
 }
 
 func (s *AdminService) TriggerMerge(ctx context.Context, req *api.TriggerMergeRequest) (*api.TriggerMergeResponse, error) {
-	return nil, fmt.Errorf("trigger merge not implemented")
+	if s.cluster == nil {
+		return nil, fmt.Errorf("cluster not available")
+	}
+	if err := s.cluster.TriggerMerge(req.Force); err != nil {
+		return nil, err
+	}
+	return &api.TriggerMergeResponse{}, nil
 }
 
 func registerKVAdminServers(s *grpc.Server, cl *cluster.Cluster) {
