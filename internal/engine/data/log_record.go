@@ -13,16 +13,21 @@ const (
 	LogRecordTxnFinished
 )
 
-// crc type keySize valueSize
-// 4 +  1  +  5   +   5 = 15
-const maxLogRecordHeaderSize = binary.MaxVarintLen32*2 + 5
+// crc type keySize valueSize commitTs prevOffset
+// 4 + 1 + 5 + 5 + 10 + 10 (varint upper bounds)
+const (
+	maxLogRecordHeaderSize = binary.MaxVarintLen32*2 + binary.MaxVarintLen64*2 + 5
+	logRecordMetaFlag      = byte(1 << 7)
+)
 
 // LogRecord 写入到数据文件的记录
 // 之所以叫日志，是因为数据文件中的数据是追加写入的，类似日志的格式
 type LogRecord struct {
-	Key   []byte
-	Value []byte
-	Type  LogRecordType
+	Key        []byte
+	Value      []byte
+	Type       LogRecordType
+	CommitTs   uint64
+	PrevOffset int64
 }
 
 // LogRecord 的头部信息
@@ -31,6 +36,8 @@ type logRecordHeader struct {
 	recordType LogRecordType // 标识 LogRecord 的类型
 	keySize    uint32        // key 的长度
 	valueSize  uint32        // value 的长度
+	commitTs   uint64        // 事务提交时间戳
+	prevOffset int64         // 上一个版本在磁盘中的偏移
 }
 
 // LogRecordPos 数据内存索引，主要是描述数据在磁盘上的位置
@@ -57,12 +64,21 @@ func EncodeLogRecord(logRecord *LogRecord) ([]byte, int64) {
 	header := make([]byte, maxLogRecordHeaderSize)
 
 	// 第五个字节存储 Type
-	header[4] = logRecord.Type
+	typeByte := byte(logRecord.Type)
+	useMeta := logRecord.CommitTs != 0 || logRecord.PrevOffset != 0 || logRecord.Type == LogRecordTxnFinished
+	if useMeta {
+		typeByte |= logRecordMetaFlag
+	}
+	header[4] = typeByte
 	var index = 5
 	// 5 字节之后，存储的是 key 和 value 的长度信息
 	// 使用变长类型，节省空间
 	index += binary.PutVarint(header[index:], int64(len(logRecord.Key)))
 	index += binary.PutVarint(header[index:], int64(len(logRecord.Value)))
+	if useMeta {
+		index += binary.PutUvarint(header[index:], logRecord.CommitTs)
+		index += binary.PutVarint(header[index:], logRecord.PrevOffset)
+	}
 
 	var size = index + len(logRecord.Key) + len(logRecord.Value)
 	encBytes := make([]byte, size)
@@ -108,9 +124,12 @@ func decodeLogRecordHeader(buf []byte) (*logRecordHeader, int64) {
 	}
 
 	header := &logRecordHeader{
-		crc:        binary.LittleEndian.Uint32(buf[:4]),
-		recordType: buf[4],
+		crc: binary.LittleEndian.Uint32(buf[:4]),
 	}
+
+	typeByte := buf[4]
+	header.recordType = LogRecordType(typeByte &^ logRecordMetaFlag)
+	hasMeta := (typeByte & logRecordMetaFlag) != 0
 
 	var index = 5
 	// 取出实际的 key size
@@ -122,6 +141,22 @@ func decodeLogRecordHeader(buf []byte) (*logRecordHeader, int64) {
 	valueSize, n := binary.Varint(buf[index:])
 	header.valueSize = uint32(valueSize)
 	index += n
+
+	if hasMeta {
+		commitTs, n := binary.Uvarint(buf[index:])
+		if n <= 0 {
+			return nil, 0
+		}
+		header.commitTs = commitTs
+		index += n
+
+		prevOffset, n := binary.Varint(buf[index:])
+		if n <= 0 {
+			return nil, 0
+		}
+		header.prevOffset = prevOffset
+		index += n
+	}
 
 	return header, int64(index)
 }

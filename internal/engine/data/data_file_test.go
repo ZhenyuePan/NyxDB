@@ -62,7 +62,8 @@ func TestDataFile_Sync(t *testing.T) {
 }
 
 func TestDataFile_ReadLogRecord(t *testing.T) {
-	dataFile, err := OpenDataFile(os.TempDir(), 6666, fio.StandardFIO)
+	dir := t.TempDir()
+	dataFile, err := OpenDataFile(dir, 6666, fio.StandardFIO)
 	assert.Nil(t, err)
 	assert.NotNil(t, dataFile)
 
