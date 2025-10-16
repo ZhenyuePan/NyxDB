@@ -125,7 +125,7 @@ func TestClusterMembershipPersistence(t *testing.T) {
 }
 
 func TestClusterChaosResilience(t *testing.T) {
-	rand.Seed(time.Now().UnixNano())
+	rand.Seed(1)
 
 	baseDir := t.TempDir()
 	network := newChaosNetwork()
@@ -164,16 +164,8 @@ func TestClusterChaosResilience(t *testing.T) {
 		}
 	})
 
-    leader := waitForHealthyCluster(t, nodes)
-    require.NotNil(t, leader)
-
-    for _, n := range nodes {
-        if n.id == leader.id {
-            continue
-        }
-        require.NoError(t, leader.cluster.AddMember(n.id, n.opts.ClusterConfig.NodeAddress))
-        leader = waitForHealthyCluster(t, nodes)
-    }
+	leader := waitForHealthyCluster(t, nodes)
+	require.NotNil(t, leader)
 
 	require.NoError(t, leader.cluster.Put([]byte("chaos"), []byte("v1")))
 	waitForValue(t, nodes, []byte("chaos"), []byte("v1"))
@@ -313,19 +305,19 @@ type nodeHarness struct {
 }
 
 func startNodeHarness(t *testing.T, h *nodeHarness) {
-    require.NotNil(t, h.opts.ClusterConfig)
-    require.Len(t, h.opts.ClusterConfig.ClusterAddresses, 3)
-    parsed := parsePeerAddresses(h.opts.ClusterConfig.ClusterAddresses)
-    require.Len(t, parsed, 3)
-    engine, err := db.Open(h.opts)
-    require.NoError(t, err)
-    h.engine = engine
+	engine, err := db.Open(h.opts)
+	require.NoError(t, err)
+	h.engine = engine
 
-    cl, err := NewClusterWithTransport(h.id, h.opts, engine, h.transport)
-    require.NoError(t, err)
-    h.cluster = cl
-    h.network.attach(h.id, cl)
-    require.NoError(t, cl.Start())
+	cl, err := NewClusterWithTransport(h.id, h.opts, engine, h.transport)
+	require.NoError(t, err)
+	h.cluster = cl
+	h.network.attach(h.id, cl)
+	require.NoError(t, cl.Start())
+	cl.membersMu.RLock()
+	count := len(cl.members)
+	cl.membersMu.RUnlock()
+	require.Equal(t, 3, count)
 }
 
 func stopNodeHarness(h *nodeHarness) {

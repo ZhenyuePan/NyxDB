@@ -392,10 +392,9 @@ func (c *Cluster) buildRaftPeers() []etcdraft.Peer {
 	c.membersMu.Lock()
 	defer c.membersMu.Unlock()
 
-	if len(c.members) == 0 {
-		cfg := c.options.ClusterConfig
-		if cfg != nil && cfg.ClusterMode {
-			for _, p := range parsePeerAddresses(cfg.ClusterAddresses) {
+	if cfg := c.options.ClusterConfig; cfg != nil && cfg.ClusterMode {
+		for _, p := range parsePeerAddresses(cfg.ClusterAddresses) {
+			if _, exists := c.members[p.id]; !exists || c.members[p.id] == "" {
 				c.members[p.id] = p.addr
 			}
 		}
