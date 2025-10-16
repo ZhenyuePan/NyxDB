@@ -32,12 +32,19 @@ type DB struct {
 	olderFiles      map[uint32]*data.DataFile // 旧的数据文件，只能用于读
 	index           index.Indexer             // 内存索引
 	seqNo           uint64                    // 事务序列号，全局递增
+	maxCommittedTs  uint64                    // 当前已提交的最大事务时间戳
 	isMerging       bool                      // 是否正在 merge
 	seqNoFileExists bool                      // 存储事务序列号的文件是否存在
 	isInitial       bool                      // 是否是第一次初始化此数据目录
 	fileLock        *flock.Flock              // 文件锁保证多进程之间的互斥
 	bytesWrite      uint                      // 累计写了多少个字节
 	reclaimSize     int64                     // 表示有多少数据是无效的
+}
+
+type logEntry struct {
+	key   []byte
+	value []byte
+	typ   data.LogRecordType
 }
 
 // Stat 存储引擎统计信息
@@ -115,6 +122,10 @@ func Open(options Options) (*DB, error) {
 
 	if err := db.loadSeqNo(); err != nil {
 		return nil, err
+	}
+
+	if db.seqNo > db.maxCommittedTs {
+		db.maxCommittedTs = db.seqNo
 	}
 
 	return db, nil
@@ -214,25 +225,13 @@ func (db *DB) Put(key []byte, value []byte) error {
 		return ErrKeyIsEmpty
 	}
 
-	// 构造 LogRecord 结构体
-	logRecord := &data.LogRecord{
-		Key:   logRecordKeyWithSeq(key, nonTransactionSeqNo),
-		Value: value,
-		Type:  data.LogRecordNormal,
+	entry := &logEntry{
+		key:   append([]byte(nil), key...),
+		value: append([]byte(nil), value...),
+		typ:   data.LogRecordNormal,
 	}
 
-	// 追加写入到当前活跃数据文件当中
-	pos, err := db.appendLogRecordWithLock(logRecord)
-	if err != nil {
-		return err
-	}
-
-	// 更新内存索引
-	if oldPos := db.index.Put(key, pos); oldPos != nil {
-		db.reclaimSize += int64(oldPos.Size)
-	}
-
-	return nil
+	return db.commitInternal([]*logEntry{entry}, db.options.SyncWrites)
 }
 
 // Delete 根据 key 删除对应的数据
@@ -247,27 +246,12 @@ func (db *DB) Delete(key []byte) error {
 		return nil
 	}
 
-	// 构造 LogRecord，标识其是被删除的
-	logRecord := &data.LogRecord{
-		Key:  logRecordKeyWithSeq(key, nonTransactionSeqNo),
-		Type: data.LogRecordDeleted,
+	entry := &logEntry{
+		key: append([]byte(nil), key...),
+		typ: data.LogRecordDeleted,
 	}
-	// 写入到数据文件当中
-	pos, err := db.appendLogRecordWithLock(logRecord)
-	if err != nil {
-		return err
-	}
-	db.reclaimSize += int64(pos.Size)
 
-	//	从内存索引中将对应的 key 删除
-	oldPos, ok := db.index.Delete(key)
-	if !ok {
-		return ErrIndexUpdateFailed
-	}
-	if oldPos != nil {
-		db.reclaimSize += int64(oldPos.Size)
-	}
-	return nil
+	return db.commitInternal([]*logEntry{entry}, db.options.SyncWrites)
 }
 
 // Get 根据 key 读取数据
@@ -350,10 +334,85 @@ func (db *DB) getValueByPosition(logRecordPos *data.LogRecordPos) ([]byte, error
 	return logRecord.Value, nil
 }
 
-func (db *DB) appendLogRecordWithLock(logRecord *data.LogRecord) (*data.LogRecordPos, error) {
+func (db *DB) commitInternal(entries []*logEntry, forceSync bool) error {
+	if len(entries) == 0 {
+		return nil
+	}
+
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	return db.appendLogRecord(logRecord)
+
+	commitTs := db.seqNo + 1
+	db.seqNo = commitTs
+
+	localHeads := make(map[string]*data.LogRecordPos, len(entries))
+	writtenPositions := make([]*data.LogRecordPos, len(entries))
+
+	for i, entry := range entries {
+		if len(entry.key) == 0 {
+			return ErrKeyIsEmpty
+		}
+
+		keyStr := string(entry.key)
+		var prevOffset int64 = -1
+		if pos := localHeads[keyStr]; pos != nil {
+			prevOffset = pos.Offset
+		} else if pos := db.index.Get(entry.key); pos != nil {
+			prevOffset = pos.Offset
+		}
+
+		storedKey := logRecordKeyWithSeq(entry.key, commitTs)
+		logRecord := &data.LogRecord{
+			Key:        storedKey,
+			Value:      entry.value,
+			Type:       entry.typ,
+			CommitTs:   commitTs,
+			PrevOffset: prevOffset,
+		}
+
+		pos, err := db.appendLogRecord(logRecord)
+		if err != nil {
+			return err
+		}
+		localHeads[keyStr] = pos
+		writtenPositions[i] = pos
+	}
+
+	finishRecord := &data.LogRecord{
+		Key:      logRecordKeyWithSeq(txnFinKey, commitTs),
+		Type:     data.LogRecordTxnFinished,
+		CommitTs: commitTs,
+	}
+	if _, err := db.appendLogRecord(finishRecord); err != nil {
+		return err
+	}
+
+	if forceSync {
+		if err := db.activeFile.Sync(); err != nil {
+			return err
+		}
+		db.bytesWrite = 0
+	}
+
+	for idx, entry := range entries {
+		key := entry.key
+		pos := writtenPositions[idx]
+		var oldPos *data.LogRecordPos
+		if entry.typ == data.LogRecordDeleted {
+			oldPos, _ = db.index.Delete(key)
+			db.reclaimSize += int64(pos.Size)
+		} else {
+			oldPos = db.index.Put(key, pos)
+		}
+		if oldPos != nil {
+			db.reclaimSize += int64(oldPos.Size)
+		}
+	}
+
+	if commitTs > db.maxCommittedTs {
+		db.maxCommittedTs = commitTs
+	}
+	return nil
 }
 
 // 追加写数据到活跃文件中
@@ -571,6 +630,9 @@ func (db *DB) loadIndexFromDataFiles() error {
 
 	// 更新事务序列号
 	db.seqNo = currentSeqNo
+	if currentSeqNo > db.maxCommittedTs {
+		db.maxCommittedTs = currentSeqNo
+	}
 	return nil
 }
 

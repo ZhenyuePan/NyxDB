@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"nyxdb/internal/engine/data"
 	"sync"
-	"sync/atomic"
 )
 
 const nonTransactionSeqNo uint64 = 0
@@ -16,7 +15,8 @@ type WriteBatch struct {
 	options       WriteBatchOptions
 	mu            *sync.Mutex //不是读写锁了，这里只涉及写操作
 	db            *DB
-	pendingWrites map[string]*data.LogRecord // 暂存用户写入的数据
+	pendingWrites map[string]*logEntry // 暂存用户写入的数据
+	order         []string             // 记录写入顺序
 }
 
 // NewWriteBatch 初始化 WriteBatch
@@ -28,7 +28,8 @@ func (db *DB) NewWriteBatch(opts WriteBatchOptions) *WriteBatch {
 		options:       opts,
 		mu:            new(sync.Mutex),
 		db:            db,
-		pendingWrites: make(map[string]*data.LogRecord),
+		pendingWrites: make(map[string]*logEntry),
+		order:         make([]string, 0),
 	}
 }
 
@@ -41,8 +42,12 @@ func (wb *WriteBatch) Put(key []byte, value []byte) error {
 	defer wb.mu.Unlock()
 
 	// 暂存 LogRecord
-	logRecord := &data.LogRecord{Key: key, Value: value}
-	wb.pendingWrites[string(key)] = logRecord
+	keyStr := string(key)
+	if _, exists := wb.pendingWrites[keyStr]; !exists {
+		wb.order = append(wb.order, keyStr)
+	}
+	logRecord := &logEntry{key: append([]byte(nil), key...), value: append([]byte(nil), value...), typ: data.LogRecordNormal}
+	wb.pendingWrites[keyStr] = logRecord
 	return nil
 }
 
@@ -55,17 +60,21 @@ func (wb *WriteBatch) Delete(key []byte) error {
 	defer wb.mu.Unlock()
 
 	// 数据不存在则直接返回
+	keyStr := string(key)
 	logRecordPos := wb.db.index.Get(key)
 	if logRecordPos == nil {
-		if wb.pendingWrites[string(key)] != nil {
-			delete(wb.pendingWrites, string(key))
+		if wb.pendingWrites[keyStr] != nil {
+			delete(wb.pendingWrites, keyStr)
 		}
 		return nil
 	}
 
 	// 暂存 LogRecord
-	logRecord := &data.LogRecord{Key: key, Type: data.LogRecordDeleted}
-	wb.pendingWrites[string(key)] = logRecord
+	if _, exists := wb.pendingWrites[keyStr]; !exists {
+		wb.order = append(wb.order, keyStr)
+	}
+	logRecord := &logEntry{key: append([]byte(nil), key...), typ: data.LogRecordDeleted}
+	wb.pendingWrites[keyStr] = logRecord
 	return nil
 }
 
@@ -81,60 +90,25 @@ func (wb *WriteBatch) Commit() error {
 		return ErrExceedMaxBatchNum
 	}
 
-	// 加锁保证事务提交串行化
-	wb.db.mu.Lock()
-	defer wb.db.mu.Unlock()
-
-	// 获取当前最新的事务序列号
-	seqNo := atomic.AddUint64(&wb.db.seqNo, 1)
-
-	// 开始写数据到数据文件当中
-	positions := make(map[string]*data.LogRecordPos)
-	for _, record := range wb.pendingWrites {
-		logRecordPos, err := wb.db.appendLogRecord(&data.LogRecord{
-			Key:   logRecordKeyWithSeq(record.Key, seqNo),
-			Value: record.Value,
-			Type:  record.Type,
-		})
-		if err != nil {
-			return err
+	entries := make([]*logEntry, 0, len(wb.pendingWrites))
+	for _, keyStr := range wb.order {
+		if entry, ok := wb.pendingWrites[keyStr]; ok {
+			entries = append(entries, entry)
 		}
-		positions[string(record.Key)] = logRecordPos
+	}
+	if len(entries) == 0 {
+		wb.pendingWrites = make(map[string]*logEntry)
+		wb.order = wb.order[:0]
+		return nil
 	}
 
-	// 写一条标识事务完成的数据
-	finishedRecord := &data.LogRecord{
-		Key:  logRecordKeyWithSeq(txnFinKey, seqNo),
-		Type: data.LogRecordTxnFinished,
-	}
-	if _, err := wb.db.appendLogRecord(finishedRecord); err != nil {
+	if err := wb.db.commitInternal(entries, wb.options.SyncWrites); err != nil {
 		return err
 	}
 
-	// 根据配置决定是否持久化
-	if wb.options.SyncWrites && wb.db.activeFile != nil {
-		if err := wb.db.activeFile.Sync(); err != nil {
-			return err
-		}
-	}
-
-	// 更新内存索引
-	for _, record := range wb.pendingWrites {
-		pos := positions[string(record.Key)]
-		var oldPos *data.LogRecordPos
-		if record.Type == data.LogRecordNormal {
-			oldPos = wb.db.index.Put(record.Key, pos)
-		}
-		if record.Type == data.LogRecordDeleted {
-			oldPos, _ = wb.db.index.Delete(record.Key)
-		}
-		if oldPos != nil {
-			wb.db.reclaimSize += int64(oldPos.Size)
-		}
-	}
-
 	// 清空暂存数据
-	wb.pendingWrites = make(map[string]*data.LogRecord)
+	wb.pendingWrites = make(map[string]*logEntry)
+	wb.order = wb.order[:0]
 
 	return nil
 }
