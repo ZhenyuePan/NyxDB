@@ -10,6 +10,7 @@ type Iterator struct {
 	indexIter index.Iterator // 索引迭代器
 	db        *DB
 	options   IteratorOptions
+	readTs    uint64
 }
 
 // NewIterator 初始化迭代器
@@ -19,6 +20,7 @@ func (db *DB) NewIterator(opts IteratorOptions) *Iterator {
 		db:        db,
 		indexIter: indexIter,
 		options:   opts,
+		readTs:    db.snapshotReadTs(),
 	}
 }
 
@@ -53,9 +55,7 @@ func (it *Iterator) Key() []byte {
 // Value 当前遍历位置的 Value 数据
 func (it *Iterator) Value() ([]byte, error) {
 	logRecordPos := it.indexIter.Value()
-	it.db.mu.RLock()
-	defer it.db.mu.RUnlock()
-	return it.db.getValueByPosition(logRecordPos)
+	return it.db.getValueByPositionWithReadTs(logRecordPos, it.readTs)
 }
 
 // Close 关闭迭代器，释放相应资源
@@ -65,14 +65,25 @@ func (it *Iterator) Close() {
 
 func (it *Iterator) skipToNext() {
 	prefixLen := len(it.options.Prefix)
-	if prefixLen == 0 {
-		return
-	}
-
 	for ; it.indexIter.Valid(); it.indexIter.Next() {
 		key := it.indexIter.Key()
-		if prefixLen <= len(key) && bytes.Equal(it.options.Prefix, key[:prefixLen]) {
-			break
+		if prefixLen > 0 {
+			if prefixLen > len(key) || !bytes.Equal(it.options.Prefix, key[:prefixLen]) {
+				continue
+			}
 		}
+		valuePos := it.indexIter.Value()
+		if valuePos == nil {
+			continue
+		}
+		value, err := it.db.getValueByPositionWithReadTs(valuePos, it.readTs)
+		if err == ErrKeyNotFound {
+			continue
+		}
+		if err != nil {
+			continue
+		}
+		_ = value
+		break
 	}
 }

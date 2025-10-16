@@ -13,6 +13,7 @@ func TestEncodeLogRecord_WithMeta(t *testing.T) {
 		Value:      []byte("bitcask-go"),
 		Type:       LogRecordNormal,
 		CommitTs:   42,
+		PrevFid:    7,
 		PrevOffset: -128,
 	}
 
@@ -27,6 +28,7 @@ func TestEncodeLogRecord_WithMeta(t *testing.T) {
 	assert.EqualValues(t, len(rec.Key), header.keySize)
 	assert.EqualValues(t, len(rec.Value), header.valueSize)
 	assert.Equal(t, rec.CommitTs, header.commitTs)
+	assert.Equal(t, rec.PrevFid, header.prevFid)
 	assert.Equal(t, rec.PrevOffset, header.prevOffset)
 
 	keyStart := int(headerSize)
@@ -60,6 +62,7 @@ func TestGetLogRecordCRC(t *testing.T) {
 		Value:      []byte("world"),
 		Type:       LogRecordNormal,
 		CommitTs:   7,
+		PrevFid:    3,
 		PrevOffset: 12345,
 	}
 	encoded, _ := EncodeLogRecord(rec)

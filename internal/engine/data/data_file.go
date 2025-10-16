@@ -103,6 +103,7 @@ func (df *DataFile) ReadLogRecord(offset int64) (*LogRecord, int64, error) {
 	logRecord := &LogRecord{
 		Type:       header.recordType,
 		CommitTs:   header.commitTs,
+		PrevFid:    header.prevFid,
 		PrevOffset: header.prevOffset,
 	}
 	// 开始读取用户实际存储的 key/value 数据

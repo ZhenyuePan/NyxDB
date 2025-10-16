@@ -16,7 +16,7 @@ const (
 // crc type keySize valueSize commitTs prevOffset
 // 4 + 1 + 5 + 5 + 10 + 10 (varint upper bounds)
 const (
-	maxLogRecordHeaderSize = binary.MaxVarintLen32*2 + binary.MaxVarintLen64*2 + 5
+	maxLogRecordHeaderSize = binary.MaxVarintLen32*3 + binary.MaxVarintLen64*2 + 5
 	logRecordMetaFlag      = byte(1 << 7)
 )
 
@@ -27,6 +27,7 @@ type LogRecord struct {
 	Value      []byte
 	Type       LogRecordType
 	CommitTs   uint64
+	PrevFid    uint32
 	PrevOffset int64
 }
 
@@ -37,6 +38,7 @@ type logRecordHeader struct {
 	keySize    uint32        // key 的长度
 	valueSize  uint32        // value 的长度
 	commitTs   uint64        // 事务提交时间戳
+	prevFid    uint32        // 上一个版本所在文件
 	prevOffset int64         // 上一个版本在磁盘中的偏移
 }
 
@@ -65,7 +67,7 @@ func EncodeLogRecord(logRecord *LogRecord) ([]byte, int64) {
 
 	// 第五个字节存储 Type
 	typeByte := byte(logRecord.Type)
-	useMeta := logRecord.CommitTs != 0 || logRecord.PrevOffset != 0 || logRecord.Type == LogRecordTxnFinished
+	useMeta := logRecord.CommitTs != 0 || logRecord.PrevOffset != 0 || logRecord.PrevFid != 0 || logRecord.Type == LogRecordTxnFinished
 	if useMeta {
 		typeByte |= logRecordMetaFlag
 	}
@@ -77,6 +79,7 @@ func EncodeLogRecord(logRecord *LogRecord) ([]byte, int64) {
 	index += binary.PutVarint(header[index:], int64(len(logRecord.Value)))
 	if useMeta {
 		index += binary.PutUvarint(header[index:], logRecord.CommitTs)
+		index += binary.PutUvarint(header[index:], uint64(logRecord.PrevFid))
 		index += binary.PutVarint(header[index:], logRecord.PrevOffset)
 	}
 
@@ -148,6 +151,13 @@ func decodeLogRecordHeader(buf []byte) (*logRecordHeader, int64) {
 			return nil, 0
 		}
 		header.commitTs = commitTs
+		index += n
+
+		prevFid, n := binary.Uvarint(buf[index:])
+		if n <= 0 {
+			return nil, 0
+		}
+		header.prevFid = uint32(prevFid)
 		index += n
 
 		prevOffset, n := binary.Varint(buf[index:])

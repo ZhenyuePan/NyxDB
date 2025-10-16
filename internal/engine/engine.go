@@ -47,6 +47,20 @@ type logEntry struct {
 	typ   data.LogRecordType
 }
 
+func (db *DB) applyCommittedRecord(key []byte, typ data.LogRecordType, pos *data.LogRecordPos) {
+	oldPos := db.index.Put(key, pos)
+	if typ == data.LogRecordDeleted {
+		db.reclaimSize += int64(pos.Size)
+		if oldPos != nil {
+			db.reclaimSize += int64(oldPos.Size)
+		}
+		return
+	}
+	if oldPos != nil {
+		db.reclaimSize += int64(oldPos.Size)
+	}
+}
+
 // Stat 存储引擎统计信息
 type Stat struct {
 	KeyNum          uint  // key 的总数量
@@ -241,9 +255,15 @@ func (db *DB) Delete(key []byte) error {
 		return ErrKeyIsEmpty
 	}
 
-	// 先检查 key 是否存在，如果不存在的话直接返回
-	if pos := db.index.Get(key); pos == nil {
+	readTs := db.snapshotReadTs()
+	pos := db.index.Get(key)
+	if pos == nil {
 		return nil
+	}
+	if _, err := db.getValueByPositionWithReadTs(pos, readTs); err == ErrKeyNotFound {
+		return nil
+	} else if err != nil {
+		return err
 	}
 
 	entry := &logEntry{
@@ -256,13 +276,12 @@ func (db *DB) Delete(key []byte) error {
 
 // Get 根据 key 读取数据
 func (db *DB) Get(key []byte) ([]byte, error) {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
 	// 判断 key 的有效性
 	if len(key) == 0 {
 		return nil, ErrKeyIsEmpty
 	}
+
+	readTs := db.snapshotReadTs()
 
 	// 从内存数据结构中取出 key 对应的索引信息
 	logRecordPos := db.index.Get(key)
@@ -272,31 +291,45 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	}
 
 	// 从数据文件中获取 value
-	return db.getValueByPosition(logRecordPos)
+	return db.getValueByPositionWithReadTs(logRecordPos, readTs)
 }
 
 // ListKeys 获取数据库中所有的 key
 func (db *DB) ListKeys() [][]byte {
+	readTs := db.snapshotReadTs()
 	iterator := db.index.Iterator(false)
 	defer iterator.Close()
-	keys := make([][]byte, db.index.Size())
-	var idx int
+	keys := make([][]byte, 0, db.index.Size())
 	for iterator.Rewind(); iterator.Valid(); iterator.Next() {
-		keys[idx] = iterator.Key()
-		idx++
+		valuePos := iterator.Value()
+		if valuePos == nil {
+			continue
+		}
+		if _, err := db.getValueByPositionWithReadTs(valuePos, readTs); err == ErrKeyNotFound {
+			continue
+		} else if err != nil {
+			continue
+		}
+		keyCopy := append([]byte(nil), iterator.Key()...)
+		keys = append(keys, keyCopy)
 	}
 	return keys
 }
 
 // Fold 获取所有的数据，并执行用户指定的操作，函数返回 false 时终止遍历
 func (db *DB) Fold(fn func(key []byte, value []byte) bool) error {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
+	readTs := db.snapshotReadTs()
 	iterator := db.index.Iterator(false)
 	defer iterator.Close()
 	for iterator.Rewind(); iterator.Valid(); iterator.Next() {
-		value, err := db.getValueByPosition(iterator.Value())
+		valuePos := iterator.Value()
+		if valuePos == nil {
+			continue
+		}
+		value, err := db.getValueByPositionWithReadTs(valuePos, readTs)
+		if err == ErrKeyNotFound {
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -307,31 +340,77 @@ func (db *DB) Fold(fn func(key []byte, value []byte) bool) error {
 	return nil
 }
 
-// 根据索引信息获取对应的 value
-func (db *DB) getValueByPosition(logRecordPos *data.LogRecordPos) ([]byte, error) {
-	// 根据文件 id 找到对应的数据文件
+func (db *DB) snapshotReadTs() uint64 {
+	db.mu.RLock()
+	ts := db.maxCommittedTs
+	db.mu.RUnlock()
+	return ts
+}
+
+func (db *DB) readLogRecord(pos *data.LogRecordPos) (*data.LogRecord, error) {
+	db.mu.RLock()
 	var dataFile *data.DataFile
-	if db.activeFile.FileId == logRecordPos.Fid {
+	if db.activeFile != nil && db.activeFile.FileId == pos.Fid {
 		dataFile = db.activeFile
 	} else {
-		dataFile = db.olderFiles[logRecordPos.Fid]
+		dataFile = db.olderFiles[pos.Fid]
 	}
-	// 数据文件为空
+	db.mu.RUnlock()
+
 	if dataFile == nil {
 		return nil, ErrDataFileNotFound
 	}
 
-	// 根据偏移读取对应的数据
-	logRecord, _, err := dataFile.ReadLogRecord(logRecordPos.Offset)
+	logRecord, _, err := dataFile.ReadLogRecord(pos.Offset)
 	if err != nil {
 		return nil, err
 	}
+	return logRecord, nil
+}
 
-	if logRecord.Type == data.LogRecordDeleted {
-		return nil, ErrKeyNotFound
+func (db *DB) getValueByPositionWithReadTs(logRecordPos *data.LogRecordPos, readTs uint64) ([]byte, error) {
+	current := logRecordPos
+	visited := 0
+	for current != nil {
+		logRecord, err := db.readLogRecord(current)
+		if err != nil {
+			return nil, err
+		}
+
+		commitTs := logRecord.CommitTs
+		if commitTs == 0 || commitTs <= readTs {
+			if logRecord.Type == data.LogRecordDeleted {
+				return nil, ErrKeyNotFound
+			}
+			return logRecord.Value, nil
+		}
+
+		if logRecord.PrevOffset < 0 {
+			return nil, ErrKeyNotFound
+		}
+
+		nextFid := logRecord.PrevFid
+		if nextFid == 0 {
+			nextFid = current.Fid
+		}
+
+		if nextFid == current.Fid && logRecord.PrevOffset == current.Offset {
+			// 避免意外循环
+			return nil, ErrKeyNotFound
+		}
+
+		current = &data.LogRecordPos{
+			Fid:    nextFid,
+			Offset: logRecord.PrevOffset,
+			Size:   0,
+		}
+
+		visited++
+		if visited > 1024 {
+			return nil, ErrKeyNotFound
+		}
 	}
-
-	return logRecord.Value, nil
+	return nil, ErrKeyNotFound
 }
 
 func (db *DB) commitInternal(entries []*logEntry, forceSync bool) error {
@@ -355,10 +434,13 @@ func (db *DB) commitInternal(entries []*logEntry, forceSync bool) error {
 
 		keyStr := string(entry.key)
 		var prevOffset int64 = -1
+		var prevFid uint32 = 0
 		if pos := localHeads[keyStr]; pos != nil {
 			prevOffset = pos.Offset
+			prevFid = pos.Fid
 		} else if pos := db.index.Get(entry.key); pos != nil {
 			prevOffset = pos.Offset
+			prevFid = pos.Fid
 		}
 
 		storedKey := logRecordKeyWithSeq(entry.key, commitTs)
@@ -367,6 +449,7 @@ func (db *DB) commitInternal(entries []*logEntry, forceSync bool) error {
 			Value:      entry.value,
 			Type:       entry.typ,
 			CommitTs:   commitTs,
+			PrevFid:    prevFid,
 			PrevOffset: prevOffset,
 		}
 
@@ -397,16 +480,7 @@ func (db *DB) commitInternal(entries []*logEntry, forceSync bool) error {
 	for idx, entry := range entries {
 		key := entry.key
 		pos := writtenPositions[idx]
-		var oldPos *data.LogRecordPos
-		if entry.typ == data.LogRecordDeleted {
-			oldPos, _ = db.index.Delete(key)
-			db.reclaimSize += int64(pos.Size)
-		} else {
-			oldPos = db.index.Put(key, pos)
-		}
-		if oldPos != nil {
-			db.reclaimSize += int64(oldPos.Size)
-		}
+		db.applyCommittedRecord(key, entry.typ, pos)
 	}
 
 	if commitTs > db.maxCommittedTs {
@@ -548,20 +622,6 @@ func (db *DB) loadIndexFromDataFiles() error {
 		nonMergeFileId = fid
 	}
 
-	updateIndex := func(key []byte, typ data.LogRecordType, pos *data.LogRecordPos) {
-		var oldPos *data.LogRecordPos
-		if typ == data.LogRecordDeleted {
-			oldPos, _ = db.index.Delete(key)
-			db.reclaimSize += int64(pos.Size)
-		} else {
-			oldPos = db.index.Put(key, pos)
-		}
-		if oldPos != nil {
-			db.reclaimSize += int64(oldPos.Size)
-		}
-	}
-
-	// 暂存事务数据
 	transactionRecords := make(map[uint64][]*data.TransactionRecord)
 	var currentSeqNo = nonTransactionSeqNo
 
@@ -595,27 +655,26 @@ func (db *DB) loadIndexFromDataFiles() error {
 			// 解析 key，拿到事务序列号
 			realKey, seqNo := parseLogRecordKey(logRecord.Key)
 			if seqNo == nonTransactionSeqNo {
-				// 非事务操作，直接更新内存索引
-				updateIndex(realKey, logRecord.Type, logRecordPos)
+				if logRecord.Type == data.LogRecordNormal || logRecord.Type == data.LogRecordDeleted {
+					logRecord.Key = realKey
+					db.applyCommittedRecord(realKey, logRecord.Type, logRecordPos)
+				}
 			} else {
-				// 事务完成，对应的 seq no 的数据可以更新到内存索引中
 				if logRecord.Type == data.LogRecordTxnFinished {
 					for _, txnRecord := range transactionRecords[seqNo] {
-						updateIndex(txnRecord.Record.Key, txnRecord.Record.Type, txnRecord.Pos)
+						db.applyCommittedRecord(txnRecord.Record.Key, txnRecord.Record.Type, txnRecord.Pos)
 					}
 					delete(transactionRecords, seqNo)
-				} else {
+					if seqNo > currentSeqNo {
+						currentSeqNo = seqNo
+					}
+				} else if logRecord.Type == data.LogRecordNormal || logRecord.Type == data.LogRecordDeleted {
 					logRecord.Key = realKey
 					transactionRecords[seqNo] = append(transactionRecords[seqNo], &data.TransactionRecord{
 						Record: logRecord,
 						Pos:    logRecordPos,
 					})
 				}
-			}
-
-			// 更新事务序列号
-			if seqNo > currentSeqNo {
-				currentSeqNo = seqNo
 			}
 
 			// 递增 offset，下一次从新的位置开始读取
