@@ -11,7 +11,6 @@ import (
 	raftnode "nyxdb/internal/node"
 	rafttransport "nyxdb/internal/raft"
 	replication "nyxdb/internal/replication"
-	proxy "nyxdb/internal/server/proxy"
 
 	etcdraft "go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
@@ -23,7 +22,6 @@ type Cluster struct {
 	options   db.Options
 	db        *db.DB
 	raftNode  *raftnode.Node
-	proxy     *proxy.Proxy
 	transport rafttransport.Transport
 
 	// 集群成员管理
@@ -115,9 +113,6 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 	}
 
 	cluster.applier = replication.NewApplier(database)
-
-	// 初始化代理
-	cluster.proxy = proxy.NewProxy(options, database)
 
 	if options.ClusterConfig != nil && options.ClusterConfig.NodeAddress != "" {
 		_ = cluster.transport.AddMember(nodeID, []string{options.ClusterConfig.NodeAddress})
