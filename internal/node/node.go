@@ -7,6 +7,7 @@ import (
 
 	"go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
+	rafttransport "nyxdb/internal/raft"
 )
 
 // Node RAFT节点结构
@@ -14,7 +15,7 @@ type Node struct {
 	id        uint64
 	raftNode  raft.Node
 	config    *raft.Config
-	transport Transport
+	transport rafttransport.Transport
 	storage   raft.Storage
 
 	// 状态相关
@@ -44,7 +45,7 @@ type NodeConfig struct {
 	ID            uint64
 	Cluster       []raft.Peer
 	Storage       raft.Storage
-	Transport     Transport
+	Transport     rafttransport.Transport
 	TickMs        uint64
 	ElectionTick  int
 	HeartbeatTick int
@@ -68,15 +69,15 @@ func NewNode(config *NodeConfig) *Node {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// 创建传输层
-	transport := config.Transport
-	if transport == nil {
-		transport = NewDefaultTransport()
+	nodeTransport := config.Transport
+	if nodeTransport == nil {
+		nodeTransport = rafttransport.NewDefaultTransport()
 	}
 
 	node := &Node{
 		id:          config.ID,
 		config:      raftConfig,
-		transport:   transport,
+		transport:   nodeTransport,
 		storage:     config.Storage,
 		proposeC:    make(chan []byte, 100),
 		confChangeC: make(chan raftpb.ConfChange),

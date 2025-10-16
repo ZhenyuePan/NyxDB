@@ -1,21 +1,18 @@
 package raft
 
-import (
-	"go.etcd.io/etcd/raft/v3"
-	"go.etcd.io/etcd/raft/v3/raftpb"
-)
+import "go.etcd.io/etcd/raft/v3/raftpb"
 
 // Transport RAFT传输层接口
 type Transport interface {
 	// Send 发送消息到指定节点
 	Send(to uint64, messages []raftpb.Message) error
-	
+
 	// SendSnapshot 发送快照到指定节点
 	SendSnapshot(to uint64, snapshot raftpb.Snapshot) error
-	
+
 	// AddMember 添加新成员
 	AddMember(id uint64, peerURLs []string) error
-	
+
 	// RemoveMember 移除成员
 	RemoveMember(id uint64) error
 }
