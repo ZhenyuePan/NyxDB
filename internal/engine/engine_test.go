@@ -1,6 +1,7 @@
 package db
 
 import (
+	"nyxdb/internal/engine/data"
 	"nyxdb/internal/utils"
 	"os"
 	"testing"
@@ -175,6 +176,39 @@ func TestDB_Get(t *testing.T) {
 
 	val8, err := db2.Get(utils.GetTestKey(33))
 	assert.Equal(t, 0, len(val8))
+	assert.Equal(t, ErrKeyNotFound, err)
+}
+
+func TestDB_RecoverSkipUnfinishedTxn(t *testing.T) {
+	opts := DefaultOptions
+	dir, _ := os.MkdirTemp("", "bitcask-go-recover-unfinished")
+	opts.DirPath = dir
+
+	db, err := Open(opts)
+	assert.Nil(t, err)
+	assert.NotNil(t, db)
+
+	// 模拟写入但未完成的事务（没有 TxnFinished）
+	db.mu.Lock()
+	_, err = db.appendLogRecord(&data.LogRecord{
+		Key:        logRecordKeyWithSeq([]byte("uncommitted"), 1),
+		Value:      []byte("value"),
+		Type:       data.LogRecordNormal,
+		CommitTs:   1,
+		PrevOffset: -1,
+	})
+	db.mu.Unlock()
+	assert.Nil(t, err)
+
+	err = db.Close()
+	assert.Nil(t, err)
+
+	db2, err := Open(opts)
+	assert.Nil(t, err)
+	assert.NotNil(t, db2)
+	defer destroyDB(db2)
+
+	_, err = db2.Get([]byte("uncommitted"))
 	assert.Equal(t, ErrKeyNotFound, err)
 }
 
