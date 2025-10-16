@@ -41,6 +41,10 @@ func (f *fakeCluster) Get(key []byte) ([]byte, error) {
 	return append([]byte(nil), val...), nil
 }
 
+func (f *fakeCluster) GetLinearizable(ctx context.Context, key []byte) ([]byte, error) {
+	return f.Get(key)
+}
+
 func (f *fakeCluster) Delete(key []byte) error {
 	delete(f.store, string(key))
 	return nil

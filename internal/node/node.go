@@ -2,7 +2,9 @@ package raft
 
 import (
 	"context"
+	"encoding/binary"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.etcd.io/etcd/raft/v3"
@@ -31,6 +33,10 @@ type Node struct {
 	// 控制
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	readReqMu  sync.Mutex
+	readReqs   map[string]chan uint64
+	readReqSeq uint64
 }
 
 // Commit 提交的数据
@@ -83,6 +89,7 @@ func NewNode(config *NodeConfig) *Node {
 		confChangeC: make(chan raftpb.ConfChange),
 		ctx:         ctx,
 		cancel:      cancel,
+		readReqs:    make(map[string]chan uint64),
 	}
 
 	// 创建RAFT节点
@@ -180,6 +187,10 @@ func (n *Node) run() {
 			// 提交数据
 			n.applyCommits(rd.CommittedEntries)
 
+			if len(rd.ReadStates) > 0 {
+				n.handleReadStates(rd.ReadStates)
+			}
+
 			// 处理就绪状态
 			n.raftNode.Advance()
 
@@ -260,6 +271,88 @@ func (n *Node) sendError(err error) {
 		select {
 		case n.errorC <- err:
 		default:
+		}
+	}
+}
+
+func (n *Node) handleReadStates(states []raft.ReadState) {
+	for _, rs := range states {
+		if ch := n.takeReadRequest(rs.RequestCtx); ch != nil {
+			ch <- rs.Index
+			close(ch)
+		}
+	}
+}
+
+func (n *Node) addReadRequest(reqCtx []byte, ch chan uint64) {
+	n.readReqMu.Lock()
+	n.readReqs[string(reqCtx)] = ch
+	n.readReqMu.Unlock()
+}
+
+func (n *Node) takeReadRequest(reqCtx []byte) chan uint64 {
+	n.readReqMu.Lock()
+	defer n.readReqMu.Unlock()
+	key := string(reqCtx)
+	ch := n.readReqs[key]
+	if ch != nil {
+		delete(n.readReqs, key)
+	}
+	return ch
+}
+
+// ReadIndex issues a linearizable read and returns the log index that satisfies the read.
+func (n *Node) ReadIndex(ctx context.Context) (uint64, error) {
+	seq := atomic.AddUint64(&n.readReqSeq, 1)
+	reqCtx := make([]byte, 8)
+	binary.BigEndian.PutUint64(reqCtx, seq)
+	ch := make(chan uint64, 1)
+	n.addReadRequest(reqCtx, ch)
+
+	if err := n.raftNode.ReadIndex(ctx, reqCtx); err != nil {
+		if pending := n.takeReadRequest(reqCtx); pending != nil {
+			close(pending)
+		}
+		return 0, err
+	}
+
+	select {
+	case idx, ok := <-ch:
+		if !ok {
+			return 0, context.Canceled
+		}
+		return idx, nil
+	case <-ctx.Done():
+		if pending := n.takeReadRequest(reqCtx); pending != nil {
+			close(pending)
+		}
+		return 0, ctx.Err()
+	}
+}
+
+// AppliedIndex returns the index of the latest applied entry.
+func (n *Node) AppliedIndex() uint64 {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.applied
+}
+
+// WaitApplied blocks until the applied index reaches at least the target index.
+func (n *Node) WaitApplied(ctx context.Context, index uint64) error {
+	if index == 0 {
+		return nil
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if n.AppliedIndex() >= index {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
 		}
 	}
 }

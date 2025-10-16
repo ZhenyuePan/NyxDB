@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/gofrs/flock v0.8.1
+	github.com/gogo/protobuf v1.3.2
 	github.com/google/btree v1.1.2
 	github.com/huandu/skiplist v1.2.1
 	github.com/stretchr/testify v1.8.2
@@ -15,7 +16,6 @@ require (
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	golang.org/x/net v0.42.0 // indirect

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -125,11 +126,17 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		_ = cluster.transport.AddMember(nodeID, []string{options.ClusterConfig.NodeAddress})
 	}
 
+	storage, err := NewRaftStorage(filepath.Join(options.DirPath, "raft"))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
 	// 初始化RAFT节点
 	raftConfig := &raftnode.NodeConfig{
 		ID:            nodeID,
 		Cluster:       cluster.buildRaftPeers(),
-		Storage:       NewRaftStorage(), // 需要实现一个持久化存储
+		Storage:       storage,
 		Transport:     cluster.transport,
 		ElectionTick:  10,
 		HeartbeatTick: 1,
@@ -208,6 +215,21 @@ func (c *Cluster) RaftNode() *raftnode.Node {
 // Get 从本地数据库获取数据
 func (c *Cluster) Get(key []byte) ([]byte, error) {
 	// 读操作不需要通过RAFT，直接从本地数据库获取
+	return c.db.Get(key)
+}
+
+// GetLinearizable 执行线性一致读
+func (c *Cluster) GetLinearizable(ctx context.Context, key []byte) ([]byte, error) {
+	if !c.IsLeader() {
+		return nil, ErrNotLeader
+	}
+	index, err := c.raftNode.ReadIndex(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.raftNode.WaitApplied(ctx, index); err != nil {
+		return nil, err
+	}
 	return c.db.Get(key)
 }
 
@@ -388,13 +410,10 @@ func (c *Cluster) TriggerMerge(force bool) error {
 	})
 }
 
-// RaftStorage RAFT存储实现
-type RaftStorage struct {
-	// 实现etcd/raft/v3/raftpb.Storage接口
-	// 这里需要根据实际存储需求实现
-}
-
-var ErrReadTxnNotFound = errors.New("cluster: read transaction not found")
+var (
+	ErrReadTxnNotFound = errors.New("cluster: read transaction not found")
+	ErrNotLeader       = errors.New("cluster: not leader")
+)
 
 func (c *Cluster) registerReadTxn(txn *db.ReadTxn) ([]byte, error) {
 	const handleSize = 16
@@ -436,63 +455,4 @@ func (c *Cluster) deregisterReadTxn(handle []byte) *db.ReadTxn {
 		delete(c.readTxns, key)
 	}
 	return txn
-}
-
-// NewRaftStorage 创建RAFT存储实例
-func NewRaftStorage() *RaftStorage {
-	return &RaftStorage{}
-}
-
-// InitialState 实现Storage接口
-func (s *RaftStorage) InitialState() (raftpb.HardState, raftpb.ConfState, error) {
-	// 返回初始状态
-	return raftpb.HardState{}, raftpb.ConfState{}, nil
-}
-
-// Entries 实现Storage接口
-func (s *RaftStorage) Entries(lo, hi uint64, maxSize uint64) ([]raftpb.Entry, error) {
-	// 返回指定范围的条目
-	return []raftpb.Entry{}, nil
-}
-
-// Term 实现Storage接口
-func (s *RaftStorage) Term(i uint64) (uint64, error) {
-	// 返回指定索引的任期
-	return 0, nil
-}
-
-// LastIndex 实现Storage接口
-func (s *RaftStorage) LastIndex() (uint64, error) {
-	// 返回最后一条日志的索引
-	return 0, nil
-}
-
-// FirstIndex 实现Storage接口
-func (s *RaftStorage) FirstIndex() (uint64, error) {
-	// 返回第一条日志的索引
-	return 0, nil
-}
-
-// Snapshot 实现Storage接口
-func (s *RaftStorage) Snapshot() (raftpb.Snapshot, error) {
-	// 返回当前快照
-	return raftpb.Snapshot{}, nil
-}
-
-// ApplySnapshot 实现Storage接口
-func (s *RaftStorage) ApplySnapshot(snap raftpb.Snapshot) error {
-	// 应用快照
-	return nil
-}
-
-// SetHardState 实现Storage接口
-func (s *RaftStorage) SetHardState(st raftpb.HardState) error {
-	// 设置硬状态
-	return nil
-}
-
-// Append 实现Storage接口
-func (s *RaftStorage) Append(entries []raftpb.Entry) error {
-	// 添加条目
-	return nil
 }

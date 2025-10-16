@@ -15,6 +15,7 @@ import (
 type kvCluster interface {
 	Put([]byte, []byte) error
 	Get([]byte) ([]byte, error)
+	GetLinearizable(context.Context, []byte) ([]byte, error)
 	Delete([]byte) error
 	AddMember(uint64, string) error
 	RemoveMember(uint64) error
@@ -48,7 +49,7 @@ func (s *KVService) Get(ctx context.Context, req *api.GetRequest) (*api.GetRespo
 	if s.cluster == nil {
 		return nil, fmt.Errorf("cluster not available")
 	}
-	val, err := s.cluster.Get(req.Key)
+	val, err := s.cluster.GetLinearizable(ctx, req.Key)
 	if err != nil {
 		if err == db.ErrKeyNotFound {
 			return &api.GetResponse{Found: false}, nil
