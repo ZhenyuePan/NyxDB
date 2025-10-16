@@ -15,7 +15,7 @@ func (DefaultBinder) Register(s *grpc.Server, cl *cluster.Cluster) {
         return
     }
     if node := cl.RaftNode(); node != nil {
-        rafttransport.RegisterGRPCTransportServer(s, rafttransport.NewGRPCTransportServer(node))
+        rafttransport.RegisterGRPCTransportServer(s, node)
     }
     registerKVAdminServers(s, cl)
 }

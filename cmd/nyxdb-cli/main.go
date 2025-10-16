@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
@@ -100,7 +101,13 @@ Usage:
   nyxdb-cli kv put    --addr <host:port> --key <k> --value <v>
   nyxdb-cli kv get    --addr <host:port> --key <k>
   nyxdb-cli kv delete --addr <host:port> --key <k>
+  nyxdb-cli kv begin  --addr <host:port>
+  nyxdb-cli kv read   --addr <host:port> --handle <h> --key <k>
+  nyxdb-cli kv end    --addr <host:port> --handle <h>
   nyxdb-cli admin members --addr <host:port>
+  nyxdb-cli admin join    --addr <host:port> --node <id> --peer <host:port>
+  nyxdb-cli admin leave   --addr <host:port> --node <id>
+  nyxdb-cli admin merge   --addr <host:port> [--force]
 `)
 }
 
@@ -117,6 +124,12 @@ func kvCmd(args []string) {
 		kvGet(args[1:])
 	case "delete":
 		kvDelete(args[1:])
+	case "begin":
+		kvBegin(args[1:])
+	case "read":
+		kvRead(args[1:])
+	case "end":
+		kvEnd(args[1:])
 	default:
 		usage()
 		os.Exit(1)
@@ -132,6 +145,12 @@ func adminCmd(args []string) {
 	switch sub {
 	case "members":
 		adminMembers(args[1:])
+	case "join":
+		adminJoin(args[1:])
+	case "leave":
+		adminLeave(args[1:])
+	case "merge":
+		adminMerge(args[1:])
 	default:
 		usage()
 		os.Exit(1)
@@ -212,6 +231,93 @@ func kvDelete(args []string) {
 	fmt.Println("OK")
 }
 
+func kvBegin(args []string) {
+	fs := flag.NewFlagSet("kv begin", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:10001", "gRPC address")
+	_ = fs.Parse(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mgr := newConnManager(*addr)
+
+	req := &api.BeginReadTxnRequest{}
+	resp := new(api.BeginReadTxnResponse)
+	if err := mgr.invokeWithRetry(ctx, "/nyxdb.api.KV/BeginReadTxn", req, resp); err != nil {
+		fmt.Fprintf(os.Stderr, "begin error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("handle=%x read_ts=%d\n", resp.Handle, resp.ReadTs)
+}
+
+func kvRead(args []string) {
+	fs := flag.NewFlagSet("kv read", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:10001", "gRPC address")
+	handleHex := fs.String("handle", "", "hex encoded read handle")
+	key := fs.String("key", "", "key")
+	_ = fs.Parse(args)
+	if *handleHex == "" || *key == "" {
+		fmt.Fprintln(os.Stderr, "--handle and --key are required")
+		os.Exit(1)
+	}
+	handle, err := decodeHexString(*handleHex)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid handle: %v\n", err)
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mgr := newConnManager(*addr)
+
+	req := &api.ReadTxnGetRequest{Handle: handle, Key: []byte(*key)}
+	resp := new(api.ReadTxnGetResponse)
+	if err := mgr.invokeWithRetry(ctx, "/nyxdb.api.KV/ReadTxnGet", req, resp); err != nil {
+		fmt.Fprintf(os.Stderr, "read error: %v\n", err)
+		os.Exit(1)
+	}
+	if resp.Found {
+		fmt.Printf("%s\n", string(resp.Value))
+	} else {
+		fmt.Println("(not found)")
+	}
+}
+
+func kvEnd(args []string) {
+	fs := flag.NewFlagSet("kv end", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:10001", "gRPC address")
+	handleHex := fs.String("handle", "", "hex encoded read handle")
+	_ = fs.Parse(args)
+	if *handleHex == "" {
+		fmt.Fprintln(os.Stderr, "--handle is required")
+		os.Exit(1)
+	}
+	handle, err := decodeHexString(*handleHex)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid handle: %v\n", err)
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mgr := newConnManager(*addr)
+
+	req := &api.EndReadTxnRequest{Handle: handle}
+	resp := new(api.EndReadTxnResponse)
+	if err := mgr.invokeWithRetry(ctx, "/nyxdb.api.KV/EndReadTxn", req, resp); err != nil {
+		fmt.Fprintf(os.Stderr, "end error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("OK")
+}
+
+func decodeHexString(s string) ([]byte, error) {
+	if len(s)%2 == 1 {
+		// if odd, try to pad with leading zero for convenience
+		s = "0" + s
+	}
+	return hex.DecodeString(s)
+}
+
 func adminMembers(args []string) {
 	fs := flag.NewFlagSet("admin members", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:10001", "gRPC address")
@@ -234,4 +340,70 @@ func adminMembers(args []string) {
 	for _, m := range resp.Members {
 		fmt.Printf("node=%d addr=%s\n", m.NodeId, m.Address)
 	}
+}
+
+func adminJoin(args []string) {
+	fs := flag.NewFlagSet("admin join", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:10001", "gRPC address")
+	node := fs.Uint64("node", 0, "node id")
+	peer := fs.String("peer", "", "node gRPC address")
+	_ = fs.Parse(args)
+	if *node == 0 || *peer == "" {
+		fmt.Fprintln(os.Stderr, "--node and --peer are required")
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mgr := newConnManager(*addr)
+
+	req := &api.JoinRequest{NodeId: *node, Address: *peer}
+	resp := new(api.JoinResponse)
+	if err := mgr.invokeWithRetry(ctx, "/nyxdb.api.Admin/Join", req, resp); err != nil {
+		fmt.Fprintf(os.Stderr, "join error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("OK")
+}
+
+func adminLeave(args []string) {
+	fs := flag.NewFlagSet("admin leave", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:10001", "gRPC address")
+	node := fs.Uint64("node", 0, "node id")
+	_ = fs.Parse(args)
+	if *node == 0 {
+		fmt.Fprintln(os.Stderr, "--node is required")
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mgr := newConnManager(*addr)
+
+	req := &api.LeaveRequest{NodeId: *node}
+	resp := new(api.LeaveResponse)
+	if err := mgr.invokeWithRetry(ctx, "/nyxdb.api.Admin/Leave", req, resp); err != nil {
+		fmt.Fprintf(os.Stderr, "leave error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("OK")
+}
+
+func adminMerge(args []string) {
+	fs := flag.NewFlagSet("admin merge", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:10001", "gRPC address")
+	force := fs.Bool("force", false, "force merge even if ratio unmet")
+	_ = fs.Parse(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mgr := newConnManager(*addr)
+
+	req := &api.TriggerMergeRequest{Force: *force}
+	resp := new(api.TriggerMergeResponse)
+	if err := mgr.invokeWithRetry(ctx, "/nyxdb.api.Admin/TriggerMerge", req, resp); err != nil {
+		fmt.Fprintf(os.Stderr, "merge error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("OK")
 }

@@ -2,7 +2,6 @@ package raft
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,53 +10,25 @@ import (
 	"go.etcd.io/etcd/raft/v3/raftpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/encoding"
+	api "nyxdb/pkg/api"
 )
-
-const (
-	transportServiceName  = "nyxdb.raft.Transport"
-	transportSendFullName = "/nyxdb.raft.Transport/Send"
-)
-
-func init() {
-	encoding.RegisterCodec(jsonCodec{})
-}
-
-type jsonCodec struct{}
-
-func (jsonCodec) Marshal(v interface{}) ([]byte, error)      { return json.Marshal(v) }
-func (jsonCodec) Unmarshal(data []byte, v interface{}) error { return json.Unmarshal(data, v) }
-func (jsonCodec) Name() string                               { return "json" }
-
-// RaftMessage is the payload exchanged over gRPC transport.
-type RaftMessage struct {
-	To      uint64 `json:"to"`
-	Message []byte `json:"message"`
-}
-
-// RaftAck is returned when a stream finishes successfully.
-type RaftAck struct{}
 
 // GRPCDialer abstracts dialing so tests can inject custom behaviour.
 type GRPCDialer interface {
 	Dial(ctx context.Context, target string) (*grpc.ClientConn, error)
 }
 
-// DefaultDialer uses grpc.DialContext with insecure credentials.
 type DefaultDialer struct{}
 
 func (DefaultDialer) Dial(ctx context.Context, target string) (*grpc.ClientConn, error) {
-	return grpc.DialContext(ctx, target,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultCallOptions(grpc.ForceCodec(jsonCodec{})))
+	return grpc.DialContext(ctx, target, grpc.WithTransportCredentials(insecure.NewCredentials()))
 }
 
 type clientStream struct {
 	conn   *grpc.ClientConn
-	stream grpc.ClientStream
+	stream api.RaftTransport_SendClient
 }
 
-// GRPCTransport implements Transport using gRPC streaming.
 type GRPCTransport struct {
 	mu        sync.RWMutex
 	nodeID    uint64
@@ -66,7 +37,6 @@ type GRPCTransport struct {
 	dialer    GRPCDialer
 }
 
-// NewGRPCTransport creates a gRPC transport for the given node.
 func NewGRPCTransport(nodeID uint64, dialer GRPCDialer) *GRPCTransport {
 	if dialer == nil {
 		dialer = DefaultDialer{}
@@ -94,7 +64,7 @@ func (t *GRPCTransport) RemoveMember(id uint64) error {
 	defer t.mu.Unlock()
 	delete(t.addresses, id)
 	if cs, ok := t.streams[id]; ok {
-		_ = cs.stream.CloseSend()
+		_, _ = cs.stream.CloseAndRecv()
 		_ = cs.conn.Close()
 		delete(t.streams, id)
 	}
@@ -114,7 +84,7 @@ func (t *GRPCTransport) Send(to uint64, messages []raftpb.Message) error {
 		if err != nil {
 			return err
 		}
-		if err := cs.stream.SendMsg(&RaftMessage{To: to, Message: data}); err != nil {
+		if err := cs.stream.Send(&api.RaftMessage{To: to, Message: data}); err != nil {
 			t.closeStream(to)
 			return err
 		}
@@ -142,7 +112,8 @@ func (t *GRPCTransport) ensureStream(to uint64) (*clientStream, error) {
 	if err != nil {
 		return nil, err
 	}
-	stream, err := conn.NewStream(context.Background(), &raftTransportServiceDesc.Streams[0], transportSendFullName, grpc.CallContentSubtype(jsonCodec{}.Name()))
+	client := api.NewRaftTransportClient(conn)
+	stream, err := client.Send(context.Background())
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -157,38 +128,33 @@ func (t *GRPCTransport) ensureStream(to uint64) (*clientStream, error) {
 func (t *GRPCTransport) closeStream(to uint64) {
 	t.mu.Lock()
 	if cs, ok := t.streams[to]; ok {
-		_ = cs.stream.CloseSend()
+		_, _ = cs.stream.CloseAndRecv()
 		_ = cs.conn.Close()
 		delete(t.streams, to)
 	}
 	t.mu.Unlock()
 }
 
-// GRPCTransportServer receives raft messages via gRPC.
-type GRPCTransportServer struct {
-	node raftStepNode
-}
-
 type raftStepNode interface {
 	Step(ctx context.Context, msg raftpb.Message) error
 }
 
-type raftTransportService interface {
-	Send(grpc.ServerStream) error
+type GRPCTransportServer struct {
+	api.UnimplementedRaftTransportServer
+	node raftStepNode
 }
 
-// NewGRPCTransportServer constructs a server bound to a raft node.
 func NewGRPCTransportServer(node raftStepNode) *GRPCTransportServer {
 	return &GRPCTransportServer{node: node}
 }
 
-func (s *GRPCTransportServer) Send(stream grpc.ServerStream) error {
+func (s *GRPCTransportServer) Send(stream api.RaftTransport_SendServer) error {
 	for {
-		msg := new(RaftMessage)
-		if err := stream.RecvMsg(msg); err != nil {
-			if errors.Is(err, io.EOF) {
-				return stream.SendMsg(&RaftAck{})
-			}
+		msg, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return stream.SendAndClose(&api.RaftAck{})
+		}
+		if err != nil {
 			return err
 		}
 		var m raftpb.Message
@@ -201,22 +167,6 @@ func (s *GRPCTransportServer) Send(stream grpc.ServerStream) error {
 	}
 }
 
-func RegisterGRPCTransportServer(s *grpc.Server, srv *GRPCTransportServer) {
-	s.RegisterService(&raftTransportServiceDesc, srv)
-}
-
-var raftTransportServiceDesc = grpc.ServiceDesc{
-	ServiceName: transportServiceName,
-	HandlerType: (*raftTransportService)(nil),
-	Streams: []grpc.StreamDesc{
-		{
-			StreamName:    "Send",
-			Handler:       _RaftTransport_Send_Handler,
-			ClientStreams: true,
-		},
-	},
-}
-
-func _RaftTransport_Send_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(raftTransportService).Send(stream)
+func RegisterGRPCTransportServer(s grpc.ServiceRegistrar, node raftStepNode) {
+	api.RegisterRaftTransportServer(s, NewGRPCTransportServer(node))
 }
