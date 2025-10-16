@@ -173,6 +173,10 @@ type raftStepNode interface {
 	Step(ctx context.Context, msg raftpb.Message) error
 }
 
+type raftTransportService interface {
+	Send(grpc.ServerStream) error
+}
+
 // NewGRPCTransportServer constructs a server bound to a raft node.
 func NewGRPCTransportServer(node raftStepNode) *GRPCTransportServer {
 	return &GRPCTransportServer{node: node}
@@ -203,6 +207,7 @@ func RegisterGRPCTransportServer(s *grpc.Server, srv *GRPCTransportServer) {
 
 var raftTransportServiceDesc = grpc.ServiceDesc{
 	ServiceName: transportServiceName,
+	HandlerType: (*raftTransportService)(nil),
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "Send",
@@ -213,5 +218,5 @@ var raftTransportServiceDesc = grpc.ServiceDesc{
 }
 
 func _RaftTransport_Send_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(*GRPCTransportServer).Send(stream)
+	return srv.(raftTransportService).Send(stream)
 }

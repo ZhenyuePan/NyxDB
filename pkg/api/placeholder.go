@@ -34,3 +34,13 @@ func NewRaftTransportClient(conn interface{}) RaftTransportClient {
 type RaftTransportClient interface {
 	Send(ctx context.Context) (RaftTransport_SendClient, error)
 }
+
+// --- KV service placeholders ---
+
+type KVServer interface{}
+
+type KVClient interface{}
+
+type AdminServer interface{}
+
+type AdminClient interface{}
