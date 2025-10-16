@@ -1,0 +1,13 @@
+nodeID: 1
+engine:
+  dir: /tmp/nyxdb-node1
+  enableDiagnostics: true
+cluster:
+  clusterMode: true
+  nodeAddress: 127.0.0.1:9001
+  clusterAddresses:
+    - 1@127.0.0.1:9001
+    - 2@127.0.0.1:9002
+grpc:
+  address: 127.0.0.1:10001
+
