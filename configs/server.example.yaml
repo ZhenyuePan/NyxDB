@@ -8,6 +8,9 @@ cluster:
   clusterAddresses:
     - 1@127.0.0.1:9001
     - 2@127.0.0.1:9002
+  autoSnapshot: true
+  snapshotInterval: 5m
+  snapshotThreshold: 2048
+  snapshotCatchUpEntries: 128
 grpc:
   address: 127.0.0.1:10001
-

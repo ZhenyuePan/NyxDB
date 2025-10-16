@@ -2,6 +2,7 @@ package db
 
 import (
 	"os"
+	"time"
 )
 
 type Options struct {
@@ -46,6 +47,12 @@ type ClusterOptions struct {
 
 	// 使用的路由算法类型
 	RouterType RouterType
+
+	// 自动快照相关配置
+	AutoSnapshot          bool
+	SnapshotInterval      time.Duration
+	SnapshotThreshold     uint64
+	SnapshotCatchUpEntries uint64
 }
 
 // IteratorOptions 索引迭代器配置项

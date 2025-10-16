@@ -144,16 +144,16 @@ func adminCmd(args []string) {
 	}
 	sub := args[0]
 	switch sub {
-    case "members":
-        adminMembers(args[1:])
-    case "join":
-        adminJoin(args[1:])
-    case "leave":
-        adminLeave(args[1:])
-    case "merge":
-        adminMerge(args[1:])
-    case "snapshot":
-        adminSnapshot(args[1:])
+	case "members":
+		adminMembers(args[1:])
+	case "join":
+		adminJoin(args[1:])
+	case "leave":
+		adminLeave(args[1:])
+	case "merge":
+		adminMerge(args[1:])
+	case "snapshot":
+		adminSnapshot(args[1:])
 	default:
 		usage()
 		os.Exit(1)
@@ -412,20 +412,20 @@ func adminMerge(args []string) {
 }
 
 func adminSnapshot(args []string) {
-    fs := flag.NewFlagSet("admin snapshot", flag.ExitOnError)
-    addr := fs.String("addr", "127.0.0.1:10001", "gRPC address")
-    force := fs.Bool("force", false, "force snapshot even if heuristics say no")
-    _ = fs.Parse(args)
+	fs := flag.NewFlagSet("admin snapshot", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:10001", "gRPC address")
+	force := fs.Bool("force", false, "force snapshot even if heuristics say no")
+	_ = fs.Parse(args)
 
-    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-    defer cancel()
-    mgr := newConnManager(*addr)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mgr := newConnManager(*addr)
 
-    req := &api.TriggerSnapshotRequest{Force: *force}
-    resp := new(api.TriggerSnapshotResponse)
-    if err := mgr.invokeWithRetry(ctx, "/nyxdb.api.Admin/TriggerSnapshot", req, resp); err != nil {
-        fmt.Fprintf(os.Stderr, "snapshot error: %v\n", err)
-        os.Exit(1)
-    }
-    fmt.Println("OK")
+	req := &api.TriggerSnapshotRequest{Force: *force}
+	resp := new(api.TriggerSnapshotResponse)
+	if err := mgr.invokeWithRetry(ctx, "/nyxdb.api.Admin/TriggerSnapshot", req, resp); err != nil {
+		fmt.Fprintf(os.Stderr, "snapshot error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("OK")
 }

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"time"
+
 	db "nyxdb/internal/engine"
 	grpcserver "nyxdb/internal/server/grpc"
 )
@@ -18,9 +20,13 @@ type EngineConfig struct {
 }
 
 type ClusterConfig struct {
-	ClusterMode      bool     `yaml:"clusterMode"`
-	NodeAddress      string   `yaml:"nodeAddress"`
-	ClusterAddresses []string `yaml:"clusterAddresses"`
+	ClusterMode            bool          `yaml:"clusterMode"`
+	NodeAddress            string        `yaml:"nodeAddress"`
+	ClusterAddresses       []string      `yaml:"clusterAddresses"`
+	AutoSnapshot           bool          `yaml:"autoSnapshot"`
+	SnapshotInterval       time.Duration `yaml:"snapshotInterval"`
+	SnapshotThreshold      uint64        `yaml:"snapshotThreshold"`
+	SnapshotCatchUpEntries uint64        `yaml:"snapshotCatchUpEntries"`
 }
 
 type GRPCConfig struct {
@@ -38,11 +44,27 @@ func (c *ServerConfig) EngineOptions() db.Options {
 		if nodeAddr == "" && c.GRPC.Address != "" {
 			nodeAddr = c.GRPC.Address
 		}
+		interval := c.Cluster.SnapshotInterval
+		if interval <= 0 {
+			interval = 5 * time.Minute
+		}
+		threshold := c.Cluster.SnapshotThreshold
+		if threshold == 0 {
+			threshold = 1024
+		}
+		catchUp := c.Cluster.SnapshotCatchUpEntries
+		if catchUp == 0 {
+			catchUp = 64
+		}
 		opts.ClusterConfig = &db.ClusterOptions{
-			ClusterMode:      true,
-			NodeAddress:      nodeAddr,
-			RouterType:       db.DirectHash,
-			ClusterAddresses: c.Cluster.ClusterAddresses,
+			ClusterMode:            true,
+			NodeAddress:            nodeAddr,
+			RouterType:             db.DirectHash,
+			ClusterAddresses:       c.Cluster.ClusterAddresses,
+			AutoSnapshot:           c.Cluster.AutoSnapshot,
+			SnapshotInterval:       interval,
+			SnapshotThreshold:      threshold,
+			SnapshotCatchUpEntries: catchUp,
 		}
 	} else {
 		opts.ClusterConfig = nil

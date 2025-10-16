@@ -184,7 +184,20 @@ func (s *AdminService) TriggerSnapshot(ctx context.Context, req *api.TriggerSnap
 		return nil, fmt.Errorf("cluster not available")
 	}
 	if err := s.cluster.TriggerSnapshot(req.Force); err != nil {
-		return nil, err
+		switch {
+		case errors.Is(err, cluster.ErrNotLeader):
+			leader := s.cluster.LeaderAddress()
+			if leader != "" {
+				return nil, status.Errorf(codes.FailedPrecondition, "not leader; leader=%s", leader)
+			}
+			return nil, status.Error(codes.FailedPrecondition, "not leader")
+		case errors.Is(err, cluster.ErrSnapshotInProgress):
+			return nil, status.Error(codes.Aborted, "snapshot in progress")
+		case errors.Is(err, cluster.ErrSnapshotNotNeeded):
+			return nil, status.Error(codes.FailedPrecondition, "snapshot not needed")
+		default:
+			return nil, err
+		}
 	}
 	return &api.TriggerSnapshotResponse{}, nil
 }

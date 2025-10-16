@@ -290,7 +290,7 @@ func (n *Node) applySnapshot(snapshot raftpb.Snapshot) {
 
 // IsLeader 判断当前节点是否为领导者
 func (n *Node) IsLeader() bool {
-	return n.raftNode.Status().Lead == n.id
+ return n.raftNode.Status().Lead == n.id
 }
 
 // Status 获取节点状态

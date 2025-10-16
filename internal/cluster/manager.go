@@ -23,6 +23,12 @@ import (
 	"go.etcd.io/etcd/raft/v3/raftpb"
 )
 
+const (
+	defaultSnapshotInterval       = 5 * time.Minute
+	defaultSnapshotThreshold      = 1024
+	defaultSnapshotCatchUpEntries = 64
+)
+
 // Cluster 代表一个分布式存储集群
 type Cluster struct {
 	nodeID    uint64
@@ -54,6 +60,15 @@ type Cluster struct {
 	readTxnMu  sync.RWMutex
 	readTxns   map[string]*readTxnEntry
 	readTxnTTL time.Duration
+
+	// 快照
+	snapshotEnabled        bool
+	snapshotInterval       time.Duration
+	snapshotMinEntries     uint64
+	snapshotCatchUpEntries uint64
+	snapshotMu             sync.Mutex
+	snapshotInProgress     bool
+	lastSnapshotIndex      uint64
 }
 
 type peerAddress struct {
@@ -128,6 +143,26 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		readTxnTTL:   time.Minute,
 	}
 
+	if options.ClusterConfig != nil {
+		cc := options.ClusterConfig
+		cluster.snapshotEnabled = cc.AutoSnapshot
+		if cc.SnapshotInterval > 0 {
+			cluster.snapshotInterval = cc.SnapshotInterval
+		} else {
+			cluster.snapshotInterval = defaultSnapshotInterval
+		}
+		if cc.SnapshotThreshold > 0 {
+			cluster.snapshotMinEntries = cc.SnapshotThreshold
+		} else {
+			cluster.snapshotMinEntries = defaultSnapshotThreshold
+		}
+		if cc.SnapshotCatchUpEntries > 0 {
+			cluster.snapshotCatchUpEntries = cc.SnapshotCatchUpEntries
+		} else {
+			cluster.snapshotCatchUpEntries = defaultSnapshotCatchUpEntries
+		}
+	}
+
 	cluster.applier = replication.NewApplier(database)
 
 	memberDir := filepath.Join(options.DirPath, "cluster")
@@ -157,6 +192,9 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		return nil, err
 	}
 	cluster.storage = storage
+	if snap, err := cluster.storage.Snapshot(); err == nil {
+		cluster.lastSnapshotIndex = snap.Metadata.Index
+	}
 
 	// 初始化RAFT节点
 	raftConfig := &raftnode.NodeConfig{
@@ -184,10 +222,15 @@ func (c *Cluster) Start() error {
 	c.raftNode.Start(c.commitC, c.errorC)
 
 	// 启动后台处理协程
-	c.wg.Add(3)
+	c.wg.Add(2)
 	go c.handleCommits()
 	go c.handleErrors()
+	c.wg.Add(1)
 	go c.runReadTxnCleaner()
+	if c.snapshotEnabled && c.snapshotInterval > 0 {
+		c.wg.Add(1)
+		go c.runAutoSnapshot()
+	}
 
 	return nil
 }
@@ -475,10 +518,45 @@ func (c *Cluster) TriggerSnapshot(force bool) error {
 	if c.storage == nil {
 		return fmt.Errorf("raft storage not initialized")
 	}
-	_ = force
+	if !force && !c.IsLeader() {
+		leader := c.LeaderAddress()
+		if leader != "" {
+			return fmt.Errorf("%w: leader=%s", ErrNotLeader, leader)
+		}
+		return ErrNotLeader
+	}
+	c.snapshotMu.Lock()
+	if c.snapshotInProgress {
+		c.snapshotMu.Unlock()
+		return ErrSnapshotInProgress
+	}
+	c.snapshotInProgress = true
+	c.snapshotMu.Unlock()
+	defer func() {
+		c.snapshotMu.Lock()
+		c.snapshotInProgress = false
+		c.snapshotMu.Unlock()
+	}()
+
+	lastIndex, err := c.storage.LastIndex()
+	if err != nil {
+		return fmt.Errorf("snapshot last index: %w", err)
+	}
+	entriesSince := lastIndex - c.lastSnapshotIndex
+	if !force {
+		if c.snapshotMinEntries > 0 && entriesSince < c.snapshotMinEntries {
+			return ErrSnapshotNotNeeded
+		}
+		if lastIndex <= c.lastSnapshotIndex {
+			return ErrSnapshotNotNeeded
+		}
+	}
 	index := c.raftNode.AppliedIndex()
 	if index == 0 {
-		return fmt.Errorf("no committed entries to snapshot")
+		return ErrSnapshotNotNeeded
+	}
+	if !force && index <= c.lastSnapshotIndex {
+		return ErrSnapshotNotNeeded
 	}
 	backup, err := c.db.CreateSnapshot()
 	if err != nil {
@@ -493,12 +571,21 @@ func (c *Cluster) TriggerSnapshot(force bool) error {
 		return fmt.Errorf("marshal snapshot payload: %w", err)
 	}
 	conf := c.storage.ConfState()
-	if _, err := c.storage.CreateSnapshot(index, data, &conf); err != nil {
+	newSnap, err := c.storage.CreateSnapshot(index, data, &conf)
+	if err != nil {
+		if errors.Is(err, etcdraft.ErrSnapOutOfDate) {
+			return ErrSnapshotNotNeeded
+		}
 		return fmt.Errorf("persist snapshot: %w", err)
 	}
-	if err := c.storage.Compact(index); err != nil {
+	compactIndex := index
+	if c.snapshotCatchUpEntries > 0 && compactIndex > c.snapshotCatchUpEntries {
+		compactIndex = index - c.snapshotCatchUpEntries
+	}
+	if err := c.storage.Compact(compactIndex); err != nil && !errors.Is(err, etcdraft.ErrCompacted) {
 		return fmt.Errorf("compact log: %w", err)
 	}
+	c.lastSnapshotIndex = newSnap.Metadata.Index
 	return nil
 }
 
@@ -546,6 +633,7 @@ func (c *Cluster) applySnapshot(snapshot *raftpb.Snapshot) error {
 	if payload.GetNextCommitTs() > 0 {
 		c.observeCommitTs(payload.GetNextCommitTs())
 	}
+	c.lastSnapshotIndex = snapshot.Metadata.Index
 	return nil
 }
 
@@ -559,6 +647,7 @@ func (c *Cluster) restoreDatabaseFromSnapshot(backup []byte) error {
 	preserve := map[string]struct{}{
 		"raft":    {},
 		"cluster": {},
+		"flock":   {},
 	}
 	if err := utils.ClearDirExcept(c.options.DirPath, preserve); err != nil {
 		return fmt.Errorf("clear data dir: %w", err)
@@ -605,8 +694,10 @@ func (c *Cluster) persistMembers() error {
 }
 
 var (
-	ErrReadTxnNotFound = errors.New("cluster: read transaction not found")
-	ErrNotLeader       = errors.New("cluster: not leader")
+	ErrReadTxnNotFound    = errors.New("cluster: read transaction not found")
+	ErrNotLeader          = errors.New("cluster: not leader")
+	ErrSnapshotNotNeeded  = errors.New("cluster: snapshot not needed")
+	ErrSnapshotInProgress = errors.New("cluster: snapshot in progress")
 )
 
 type readTxnEntry struct {
@@ -699,4 +790,30 @@ func (c *Cluster) cleanupExpiredReadTxns() {
 		}
 	}
 	c.readTxnMu.Unlock()
+}
+
+func (c *Cluster) runAutoSnapshot() {
+	defer c.wg.Done()
+	ticker := time.NewTicker(c.snapshotInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if !c.snapshotEnabled {
+				continue
+			}
+			if !c.IsLeader() {
+				continue
+			}
+			if err := c.TriggerSnapshot(false); err != nil {
+				if errors.Is(err, ErrSnapshotNotNeeded) || errors.Is(err, ErrSnapshotInProgress) || errors.Is(err, ErrNotLeader) {
+					continue
+				}
+				fmt.Printf("auto snapshot error: %v\n", err)
+			}
+		case <-c.ctx.Done():
+			return
+		}
+	}
 }
