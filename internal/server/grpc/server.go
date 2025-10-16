@@ -20,15 +20,22 @@ type Server struct {
 	cfg     Config
 	cluster *cluster.Cluster
 	srv     *grpc.Server
+	binder  ServiceBinder
 }
 
 // New constructs a Server.
-func New(cfg Config, cl *cluster.Cluster) *Server {
-	return &Server{
+func New(cfg Config, cl *cluster.Cluster, binder ServiceBinder) *Server {
+	if binder == nil {
+		binder = &noopBinder{}
+	}
+	s := &Server{
 		cfg:     cfg,
 		cluster: cl,
 		srv:     grpc.NewServer(),
+		binder:  binder,
 	}
+	binder.Register(s.srv, cl)
+	return s
 }
 
 // Start begins listening on the configured address. Currently services are not registered;
@@ -58,3 +65,13 @@ func (s *Server) Stop() {
 		s.srv.GracefulStop()
 	}
 }
+
+// ServiceBinder allows injection of generated gRPC services without tying this package
+// to the generated code (facilitates optional module generation).
+type ServiceBinder interface {
+	Register(*grpc.Server, *cluster.Cluster)
+}
+
+type noopBinder struct{}
+
+func (noopBinder) Register(*grpc.Server, *cluster.Cluster) {}

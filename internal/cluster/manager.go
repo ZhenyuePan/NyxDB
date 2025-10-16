@@ -5,8 +5,8 @@ import (
 	"fmt"
 	db "nyxdb/internal/engine"
 	raftnode "nyxdb/internal/node"
-	replication "nyxdb/internal/replication"
 	rafttransport "nyxdb/internal/raft"
+	replication "nyxdb/internal/replication"
 	proxy "nyxdb/internal/server/proxy"
 	"sync"
 
@@ -27,9 +27,9 @@ type Cluster struct {
 	members   map[uint64]string // nodeID -> address
 	membersMu sync.RWMutex
 
-    commitMu     sync.Mutex
-    nextCommitTs uint64
-    applier      *replication.Applier
+	commitMu     sync.Mutex
+	nextCommitTs uint64
+	applier      *replication.Applier
 
 	// 数据提交通道
 	commitC chan *raftnode.Commit
@@ -45,7 +45,7 @@ type Cluster struct {
 func NewCluster(nodeID uint64, options db.Options, database *db.DB) (*Cluster, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-    cluster := &Cluster{
+	cluster := &Cluster{
 		nodeID:       nodeID,
 		options:      options,
 		db:           database,
@@ -212,14 +212,14 @@ func (c *Cluster) handleCommits() {
 			}
 
 			// 解析命令
-            ts, err := c.applier.Apply(commit.Data)
-            if err != nil {
-                fmt.Printf("failed to apply commit: %v\n", err)
-                continue
-            }
-            if ts > 0 {
-                c.observeCommitTs(ts)
-            }
+			ts, err := c.applier.Apply(commit.Data)
+			if err != nil {
+				fmt.Printf("failed to apply commit: %v\n", err)
+				continue
+			}
+			if ts > 0 {
+				c.observeCommitTs(ts)
+			}
 
 		case <-c.ctx.Done():
 			return
