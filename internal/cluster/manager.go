@@ -26,6 +26,9 @@ type Cluster struct {
 	members   map[uint64]string // nodeID -> address
 	membersMu sync.RWMutex
 
+	commitMu     sync.Mutex
+	nextCommitTs uint64
+
 	// 数据提交通道
 	commitC chan *raftnode.Commit
 	errorC  chan error
@@ -99,11 +102,11 @@ func (c *Cluster) Stop() error {
 
 // Put 通过RAFT集群存储数据
 func (c *Cluster) Put(key, value []byte) error {
-	// 构造操作命令
 	cmd := &Command{
-		Type:  CmdPut,
-		Key:   key,
-		Value: value,
+		CommitTs: c.allocateCommitTs(),
+		Operations: []Operation{
+			{Key: append([]byte(nil), key...), Value: append([]byte(nil), value...), Type: OpPut},
+		},
 	}
 
 	data, err := cmd.Marshal()
@@ -117,10 +120,11 @@ func (c *Cluster) Put(key, value []byte) error {
 
 // Delete 通过RAFT集群删除数据
 func (c *Cluster) Delete(key []byte) error {
-	// 构造操作命令
 	cmd := &Command{
-		Type: CmdDelete,
-		Key:  key,
+		CommitTs: c.allocateCommitTs(),
+		Operations: []Operation{
+			{Key: append([]byte(nil), key...), Type: OpDelete},
+		},
 	}
 
 	data, err := cmd.Marshal()
@@ -203,18 +207,23 @@ func (c *Cluster) handleCommits() {
 			}
 
 			// 解析命令
-			cmd := &Command{}
-			if err := cmd.Unmarshal(commit.Data); err != nil {
+			cmd, err := UnmarshalCommand(commit.Data)
+			if err != nil {
 				fmt.Printf("Failed to unmarshal command: %v\n", err)
 				continue
 			}
 
-			// 执行命令
-			switch cmd.Type {
-			case CmdPut:
-				_ = c.db.Put(cmd.Key, cmd.Value)
-			case CmdDelete:
-				_ = c.db.Delete(cmd.Key)
+			for _, op := range cmd.Operations {
+				switch op.Type {
+				case OpPut:
+					if err := c.db.Put(op.Key, op.Value); err != nil {
+						fmt.Printf("failed to apply put: %v\n", err)
+					}
+				case OpDelete:
+					if err := c.db.Delete(op.Key); err != nil {
+						fmt.Printf("failed to apply delete: %v\n", err)
+					}
+				}
 			}
 
 		case <-c.ctx.Done():
@@ -251,93 +260,11 @@ func (c *Cluster) buildRaftPeers() []etcdraft.Peer {
 	return peers
 }
 
-// Command 定义在RAFT中传播的命令
-type Command struct {
-	Type  CommandType
-	Key   []byte
-	Value []byte
-}
-
-// CommandType 命令类型
-type CommandType byte
-
-const (
-	CmdPut CommandType = iota
-	CmdDelete
-)
-
-// Marshal 序列化命令
-func (c *Command) Marshal() ([]byte, error) {
-	// 简单的序列化实现
-	data := make([]byte, 1+len(c.Key)+len(c.Value)+8)
-	data[0] = byte(c.Type)
-
-	// 写入key长度和key
-	keyLen := len(c.Key)
-	copy(data[1:], encodeUint64(uint64(keyLen)))
-	copy(data[9:], c.Key)
-
-	// 写入value长度和value
-	valueLen := len(c.Value)
-	copy(data[9+keyLen:], encodeUint64(uint64(valueLen)))
-	copy(data[17+keyLen:], c.Value)
-
-	return data, nil
-}
-
-// Unmarshal 反序列化命令
-func (c *Command) Unmarshal(data []byte) error {
-	if len(data) < 1 {
-		return fmt.Errorf("invalid command data")
-	}
-
-	c.Type = CommandType(data[0])
-
-	if len(data) < 9 {
-		return fmt.Errorf("invalid command data")
-	}
-
-	// 读取key
-	keyLen := int(decodeUint64(data[1:]))
-	if len(data) < 9+keyLen {
-		return fmt.Errorf("invalid command data")
-	}
-	c.Key = make([]byte, keyLen)
-	copy(c.Key, data[9:9+keyLen])
-
-	// 读取value
-	if len(data) < 17+keyLen {
-		return fmt.Errorf("invalid command data")
-	}
-	valueLen := int(decodeUint64(data[9+keyLen:]))
-	if len(data) < 17+keyLen+valueLen {
-		return fmt.Errorf("invalid command data")
-	}
-	c.Value = make([]byte, valueLen)
-	copy(c.Value, data[17+keyLen:17+keyLen+valueLen])
-
-	return nil
-}
-
-// encodeUint64 编码uint64为字节
-func encodeUint64(v uint64) []byte {
-	data := make([]byte, 8)
-	data[0] = byte(v >> 56)
-	data[1] = byte(v >> 48)
-	data[2] = byte(v >> 40)
-	data[3] = byte(v >> 32)
-	data[4] = byte(v >> 24)
-	data[5] = byte(v >> 16)
-	data[6] = byte(v >> 8)
-	data[7] = byte(v)
-	return data
-}
-
-// decodeUint64 从字节解码uint64
-func decodeUint64(data []byte) uint64 {
-	return uint64(data[0])<<56 | uint64(data[1])<<48 | uint64(data[2])<<40 |
-		uint64(data[3])<<32 | uint64(data[4])<<24 | uint64(data[5])<<16 |
-		uint64(data[6])<<8 | uint64(data[7])
+func (c *Cluster) allocateCommitTs() uint64 {
+	c.commitMu.Lock()
+	defer c.commitMu.Unlock()
+	c.nextCommitTs++
+	return c.nextCommitTs
 }
 
 // RaftStorage RAFT存储实现
