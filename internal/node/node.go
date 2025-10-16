@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gogo/protobuf/proto"
 	"go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
 	rafttransport "nyxdb/internal/raft"
@@ -45,6 +46,8 @@ type Commit struct {
 	Index      uint64
 	Term       uint64
 	ConfChange *raftpb.ConfChange
+	ConfState  *raftpb.ConfState
+	Snapshot   *raftpb.Snapshot
 }
 
 // NodeConfig RAFT节点配置
@@ -240,12 +243,19 @@ func (n *Node) applyCommits(committedEntries []raftpb.Entry) {
 				n.sendError(err)
 				continue
 			}
-			n.raftNode.ApplyConfChange(cc)
+			state := n.raftNode.ApplyConfChange(cc)
 			ccCopy := cc
+			var stateCopy *raftpb.ConfState
+			if state != nil {
+				if cloned, ok := proto.Clone(state).(*raftpb.ConfState); ok {
+					stateCopy = cloned
+				}
+			}
 			commit := &Commit{
 				Index:      entry.Index,
 				Term:       entry.Term,
 				ConfChange: &ccCopy,
+				ConfState:  stateCopy,
 			}
 			select {
 			case n.commitC <- commit:
@@ -268,6 +278,14 @@ func (n *Node) applySnapshot(snapshot raftpb.Snapshot) {
 	defer n.mu.Unlock()
 
 	n.applied = snapshot.Metadata.Index
+	if n.commitC != nil {
+		snapCopy := snapshot
+		commit := &Commit{Snapshot: &snapCopy}
+		select {
+		case n.commitC <- commit:
+		case <-n.ctx.Done():
+		}
+	}
 }
 
 // IsLeader 判断当前节点是否为领导者

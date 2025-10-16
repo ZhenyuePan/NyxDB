@@ -124,6 +124,41 @@ func TestClusterMembershipPersistence(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond)
 }
 
+func TestClusterTriggerSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	opts := db.DefaultOptions
+	opts.DirPath = dir
+	opts.EnableDiagnostics = false
+	opts.ClusterConfig = &db.ClusterOptions{
+		ClusterMode:      true,
+		NodeAddress:      "127.0.0.1:19001",
+		ClusterAddresses: []string{"1@127.0.0.1:19001"},
+	}
+
+	engine, err := db.Open(opts)
+	require.NoError(t, err)
+
+	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewDefaultTransport())
+	require.NoError(t, err)
+	require.NoError(t, cl.Start())
+	defer func() { _ = cl.Stop() }()
+
+	require.Eventually(t, func() bool { return cl.IsLeader() }, 5*time.Second, 50*time.Millisecond)
+
+	for i := 0; i < 8; i++ {
+		key := []byte(fmt.Sprintf("snap-%d", i))
+		require.NoError(t, cl.Put(key, []byte("value")))
+	}
+
+	require.NoError(t, cl.TriggerSnapshot(true))
+	snapshot, err := cl.storage.Snapshot()
+	require.NoError(t, err)
+	require.Greater(t, snapshot.Metadata.Index, uint64(0))
+	first, err := cl.storage.FirstIndex()
+	require.NoError(t, err)
+	require.Equal(t, snapshot.Metadata.Index+1, first)
+}
+
 func TestClusterChaosResilience(t *testing.T) {
 	rand.Seed(1)
 

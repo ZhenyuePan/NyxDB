@@ -11,10 +11,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gogo/protobuf/proto"
 	db "nyxdb/internal/engine"
 	raftnode "nyxdb/internal/node"
 	rafttransport "nyxdb/internal/raft"
 	replication "nyxdb/internal/replication"
+	utils "nyxdb/internal/utils"
+	api "nyxdb/pkg/api"
 
 	etcdraft "go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
@@ -27,6 +30,7 @@ type Cluster struct {
 	db        *db.DB
 	raftNode  *raftnode.Node
 	transport rafttransport.Transport
+	storage   *RaftStorage
 
 	// 集群成员管理
 	members     map[uint64]string // nodeID -> address
@@ -152,6 +156,7 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		cancel()
 		return nil, err
 	}
+	cluster.storage = storage
 
 	// 初始化RAFT节点
 	raftConfig := &raftnode.NodeConfig{
@@ -374,8 +379,19 @@ func (c *Cluster) handleCommits() {
 				continue
 			}
 
+			if commit.Snapshot != nil {
+				if err := c.applySnapshot(commit.Snapshot); err != nil {
+					fmt.Printf("failed to apply snapshot: %v\n", err)
+				}
+				continue
+			}
+
 			if commit.ConfChange != nil {
-				c.applyConfChange(commit.ConfChange)
+				c.applyConfChange(commit.ConfChange, commit.ConfState)
+				continue
+			}
+
+			if len(commit.Data) == 0 {
 				continue
 			}
 
@@ -455,7 +471,38 @@ func (c *Cluster) TriggerMerge(force bool) error {
 	})
 }
 
-func (c *Cluster) applyConfChange(cc *raftpb.ConfChange) {
+func (c *Cluster) TriggerSnapshot(force bool) error {
+	if c.storage == nil {
+		return fmt.Errorf("raft storage not initialized")
+	}
+	_ = force
+	index := c.raftNode.AppliedIndex()
+	if index == 0 {
+		return fmt.Errorf("no committed entries to snapshot")
+	}
+	backup, err := c.db.CreateSnapshot()
+	if err != nil {
+		return fmt.Errorf("create db snapshot: %w", err)
+	}
+	payload := &api.SnapshotPayload{
+		Backup:       backup,
+		NextCommitTs: c.nextCommitTs,
+	}
+	data, err := proto.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal snapshot payload: %w", err)
+	}
+	conf := c.storage.ConfState()
+	if _, err := c.storage.CreateSnapshot(index, data, &conf); err != nil {
+		return fmt.Errorf("persist snapshot: %w", err)
+	}
+	if err := c.storage.Compact(index); err != nil {
+		return fmt.Errorf("compact log: %w", err)
+	}
+	return nil
+}
+
+func (c *Cluster) applyConfChange(cc *raftpb.ConfChange, cs *raftpb.ConfState) {
 	switch cc.Type {
 	case raftpb.ConfChangeAddNode, raftpb.ConfChangeAddLearnerNode:
 		addr := string(cc.Context)
@@ -478,6 +525,54 @@ func (c *Cluster) applyConfChange(cc *raftpb.ConfChange) {
 	if err := c.persistMembers(); err != nil {
 		fmt.Printf("failed to persist members: %v\n", err)
 	}
+	if cs != nil && c.storage != nil {
+		if err := c.storage.SetConfState(cs); err != nil {
+			fmt.Printf("failed to update raft conf state: %v\n", err)
+		}
+	}
+}
+
+func (c *Cluster) applySnapshot(snapshot *raftpb.Snapshot) error {
+	if snapshot == nil || len(snapshot.Data) == 0 {
+		return nil
+	}
+	payload := &api.SnapshotPayload{}
+	if err := proto.Unmarshal(snapshot.Data, payload); err != nil {
+		return fmt.Errorf("decode snapshot payload: %w", err)
+	}
+	if err := c.restoreDatabaseFromSnapshot(payload.GetBackup()); err != nil {
+		return err
+	}
+	if payload.GetNextCommitTs() > 0 {
+		c.observeCommitTs(payload.GetNextCommitTs())
+	}
+	return nil
+}
+
+func (c *Cluster) restoreDatabaseFromSnapshot(backup []byte) error {
+	if len(backup) == 0 {
+		return fmt.Errorf("snapshot payload is empty")
+	}
+	if err := c.db.Close(); err != nil {
+		return fmt.Errorf("close db before restore: %w", err)
+	}
+	preserve := map[string]struct{}{
+		"raft":    {},
+		"cluster": {},
+	}
+	if err := utils.ClearDirExcept(c.options.DirPath, preserve); err != nil {
+		return fmt.Errorf("clear data dir: %w", err)
+	}
+	if err := utils.UntarGz(backup, c.options.DirPath); err != nil {
+		return fmt.Errorf("restore snapshot files: %w", err)
+	}
+	newDB, err := db.Open(c.options)
+	if err != nil {
+		return fmt.Errorf("reopen db: %w", err)
+	}
+	c.db = newDB
+	c.applier = replication.NewApplier(newDB)
+	return nil
 }
 
 func (c *Cluster) restoreMembers() error {

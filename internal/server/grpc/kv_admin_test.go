@@ -113,6 +113,10 @@ func (f *fakeCluster) TriggerMerge(force bool) error {
 	return nil
 }
 
+func (f *fakeCluster) TriggerSnapshot(force bool) error {
+	return nil
+}
+
 func (f *fakeCluster) LeaderAddress() string {
 	return f.leader
 }
@@ -213,4 +217,12 @@ func TestAdminService_TriggerMerge(t *testing.T) {
 	_, err = adm.TriggerMerge(context.Background(), &api.TriggerMergeRequest{Force: false})
 	assert.NoError(t, err)
 	assert.Equal(t, 1, cl.mergeCount)
+}
+
+func TestAdminService_TriggerSnapshot(t *testing.T) {
+	cl := newFakeCluster()
+	adm := NewAdminService(cl)
+
+	_, err := adm.TriggerSnapshot(context.Background(), &api.TriggerSnapshotRequest{Force: true})
+	assert.NoError(t, err)
 }

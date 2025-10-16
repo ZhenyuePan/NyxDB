@@ -79,6 +79,17 @@ message TriggerMergeRequest {
 
 message TriggerMergeResponse {}
 
+message TriggerSnapshotRequest {
+  bool force = 1;
+}
+
+message TriggerSnapshotResponse {}
+
+message SnapshotPayload {
+  bytes backup = 1;
+  uint64 next_commit_ts = 2;
+}
+
 message RaftMessage {
   uint64 to = 1;
   bytes message = 2;
@@ -104,4 +115,5 @@ service Admin {
   rpc Leave(LeaveRequest) returns (LeaveResponse);
   rpc Members(MembersRequest) returns (MembersResponse);
   rpc TriggerMerge(TriggerMergeRequest) returns (TriggerMergeResponse);
+  rpc TriggerSnapshot(TriggerSnapshotRequest) returns (TriggerSnapshotResponse);
 }

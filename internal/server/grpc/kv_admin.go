@@ -28,6 +28,7 @@ type kvCluster interface {
 	EndReadTxn([]byte) error
 	TriggerMerge(force bool) error
 	LeaderAddress() string
+	TriggerSnapshot(force bool) error
 }
 
 type KVService struct {
@@ -176,6 +177,16 @@ func (s *AdminService) TriggerMerge(ctx context.Context, req *api.TriggerMergeRe
 		return nil, err
 	}
 	return &api.TriggerMergeResponse{}, nil
+}
+
+func (s *AdminService) TriggerSnapshot(ctx context.Context, req *api.TriggerSnapshotRequest) (*api.TriggerSnapshotResponse, error) {
+	if s.cluster == nil {
+		return nil, fmt.Errorf("cluster not available")
+	}
+	if err := s.cluster.TriggerSnapshot(req.Force); err != nil {
+		return nil, err
+	}
+	return &api.TriggerSnapshotResponse{}, nil
 }
 
 func registerKVAdminServers(s *grpc.Server, cl *cluster.Cluster) {

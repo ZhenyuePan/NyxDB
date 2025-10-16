@@ -425,10 +425,11 @@ var KV_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	Admin_Join_FullMethodName         = "/nyxdb.api.Admin/Join"
-	Admin_Leave_FullMethodName        = "/nyxdb.api.Admin/Leave"
-	Admin_Members_FullMethodName      = "/nyxdb.api.Admin/Members"
-	Admin_TriggerMerge_FullMethodName = "/nyxdb.api.Admin/TriggerMerge"
+	Admin_Join_FullMethodName            = "/nyxdb.api.Admin/Join"
+	Admin_Leave_FullMethodName           = "/nyxdb.api.Admin/Leave"
+	Admin_Members_FullMethodName         = "/nyxdb.api.Admin/Members"
+	Admin_TriggerMerge_FullMethodName    = "/nyxdb.api.Admin/TriggerMerge"
+	Admin_TriggerSnapshot_FullMethodName = "/nyxdb.api.Admin/TriggerSnapshot"
 )
 
 // AdminClient is the client API for Admin service.
@@ -439,6 +440,7 @@ type AdminClient interface {
 	Leave(ctx context.Context, in *LeaveRequest, opts ...grpc.CallOption) (*LeaveResponse, error)
 	Members(ctx context.Context, in *MembersRequest, opts ...grpc.CallOption) (*MembersResponse, error)
 	TriggerMerge(ctx context.Context, in *TriggerMergeRequest, opts ...grpc.CallOption) (*TriggerMergeResponse, error)
+	TriggerSnapshot(ctx context.Context, in *TriggerSnapshotRequest, opts ...grpc.CallOption) (*TriggerSnapshotResponse, error)
 }
 
 type adminClient struct {
@@ -489,6 +491,16 @@ func (c *adminClient) TriggerMerge(ctx context.Context, in *TriggerMergeRequest,
 	return out, nil
 }
 
+func (c *adminClient) TriggerSnapshot(ctx context.Context, in *TriggerSnapshotRequest, opts ...grpc.CallOption) (*TriggerSnapshotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TriggerSnapshotResponse)
+	err := c.cc.Invoke(ctx, Admin_TriggerSnapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServer is the server API for Admin service.
 // All implementations must embed UnimplementedAdminServer
 // for forward compatibility
@@ -497,6 +509,7 @@ type AdminServer interface {
 	Leave(context.Context, *LeaveRequest) (*LeaveResponse, error)
 	Members(context.Context, *MembersRequest) (*MembersResponse, error)
 	TriggerMerge(context.Context, *TriggerMergeRequest) (*TriggerMergeResponse, error)
+	TriggerSnapshot(context.Context, *TriggerSnapshotRequest) (*TriggerSnapshotResponse, error)
 	mustEmbedUnimplementedAdminServer()
 }
 
@@ -515,6 +528,9 @@ func (UnimplementedAdminServer) Members(context.Context, *MembersRequest) (*Memb
 }
 func (UnimplementedAdminServer) TriggerMerge(context.Context, *TriggerMergeRequest) (*TriggerMergeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method TriggerMerge not implemented")
+}
+func (UnimplementedAdminServer) TriggerSnapshot(context.Context, *TriggerSnapshotRequest) (*TriggerSnapshotResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method TriggerSnapshot not implemented")
 }
 func (UnimplementedAdminServer) mustEmbedUnimplementedAdminServer() {}
 
@@ -601,6 +617,24 @@ func _Admin_TriggerMerge_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Admin_TriggerSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TriggerSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServer).TriggerSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Admin_TriggerSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServer).TriggerSnapshot(ctx, req.(*TriggerSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Admin_ServiceDesc is the grpc.ServiceDesc for Admin service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -623,6 +657,10 @@ var Admin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TriggerMerge",
 			Handler:    _Admin_TriggerMerge_Handler,
+		},
+		{
+			MethodName: "TriggerSnapshot",
+			Handler:    _Admin_TriggerSnapshot_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

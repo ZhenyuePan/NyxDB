@@ -117,6 +117,28 @@ func (s *RaftStorage) Term(i uint64) (uint64, error) {
 	return s.entries[idx].Term, nil
 }
 
+func (s *RaftStorage) termAtLocked(i uint64) (uint64, error) {
+	if snapIndex := s.snapshot.Metadata.Index; i == snapIndex {
+		return s.snapshot.Metadata.Term, nil
+	} else if i < snapIndex {
+		return 0, raft.ErrCompacted
+	}
+	if len(s.entries) == 0 {
+		if i == s.snapshot.Metadata.Index {
+			return s.snapshot.Metadata.Term, nil
+		}
+		return 0, raft.ErrUnavailable
+	}
+	if i < s.entryOffset {
+		return 0, raft.ErrCompacted
+	}
+	idx := i - s.entryOffset
+	if idx >= uint64(len(s.entries)) {
+		return 0, raft.ErrUnavailable
+	}
+	return s.entries[idx].Term, nil
+}
+
 // LastIndex returns index of the last entry.
 func (s *RaftStorage) LastIndex() (uint64, error) {
 	s.mu.RLock()
@@ -148,6 +170,7 @@ func (s *RaftStorage) ApplySnapshot(snap raftpb.Snapshot) error {
 	}
 
 	s.snapshot = cloneSnapshot(snap)
+	s.confState = snap.Metadata.ConfState
 	newOffset := snap.Metadata.Index + 1
 	if len(s.entries) > 0 {
 		if snap.Metadata.Index >= s.entries[len(s.entries)-1].Index {
@@ -163,6 +186,83 @@ func (s *RaftStorage) ApplySnapshot(snap raftpb.Snapshot) error {
 	}
 	s.entryOffset = newOffset
 	return s.persistLocked()
+}
+
+// CreateSnapshot stores a new snapshot at the given index with the provided payload.
+func (s *RaftStorage) CreateSnapshot(index uint64, data []byte, cs *raftpb.ConfState) (*raftpb.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if index < s.snapshot.Metadata.Index {
+		return nil, raft.ErrSnapOutOfDate
+	}
+	if index > s.lastIndexLocked() {
+		return nil, raft.ErrUnavailable
+	}
+	term, err := s.termAtLocked(index)
+	if err != nil {
+		return nil, err
+	}
+	conf := proto.Clone(&s.confState).(*raftpb.ConfState)
+	if cs != nil {
+		conf = proto.Clone(cs).(*raftpb.ConfState)
+	}
+	snap := raftpb.Snapshot{
+		Data: append([]byte(nil), data...),
+		Metadata: raftpb.SnapshotMetadata{
+			Index:     index,
+			Term:      term,
+			ConfState: *conf,
+		},
+	}
+	s.snapshot = cloneSnapshot(snap)
+	s.confState = *conf
+	if err := s.persistLocked(); err != nil {
+		return nil, err
+	}
+	return &snap, nil
+}
+
+// Compact removes entries up to the provided index (inclusive).
+func (s *RaftStorage) Compact(index uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	first := s.firstIndexLocked()
+	if index < first-1 {
+		return raft.ErrCompacted
+	}
+	if index >= s.lastIndexLocked() {
+		s.entries = nil
+		s.entryOffset = index + 1
+		return s.persistLocked()
+	}
+	offset := index + 1 - s.entryOffset
+	if offset > uint64(len(s.entries)) {
+		return raft.ErrUnavailable
+	}
+	s.entries = cloneEntries(s.entries[offset:])
+	s.entryOffset = index + 1
+	return s.persistLocked()
+}
+
+// SetConfState stores the provided conf state.
+func (s *RaftStorage) SetConfState(cs *raftpb.ConfState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cs == nil {
+		return nil
+	}
+	cloned := proto.Clone(cs).(*raftpb.ConfState)
+	s.confState = *cloned
+	return s.persistLocked()
+}
+
+// ConfState returns the current configuration state.
+func (s *RaftStorage) ConfState() raftpb.ConfState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return *proto.Clone(&s.confState).(*raftpb.ConfState)
 }
 
 // Append appends new entries to storage.
