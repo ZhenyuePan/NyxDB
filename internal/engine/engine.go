@@ -39,6 +39,9 @@ type DB struct {
 	fileLock        *flock.Flock              // 文件锁保证多进程之间的互斥
 	bytesWrite      uint                      // 累计写了多少个字节
 	reclaimSize     int64                     // 表示有多少数据是无效的
+	readTxnMu       sync.Mutex
+	activeReadTxns  map[uint64]uint64
+	nextReadTxnID   uint64
 }
 
 type logEntry struct {
@@ -105,12 +108,13 @@ func Open(options Options) (*DB, error) {
 
 	// 初始化 DB 实例结构体
 	db := &DB{
-		options:    options,
-		mu:         new(sync.RWMutex),
-		olderFiles: make(map[uint32]*data.DataFile),
-		index:      index.NewIndexer(options.IndexType, options.DirPath, options.SyncWrites),
-		isInitial:  isInitial,
-		fileLock:   fileLock,
+		options:        options,
+		mu:             new(sync.RWMutex),
+		olderFiles:     make(map[uint32]*data.DataFile),
+		index:          index.NewIndexer(options.IndexType, options.DirPath, options.SyncWrites),
+		isInitial:      isInitial,
+		fileLock:       fileLock,
+		activeReadTxns: make(map[uint64]uint64),
 	}
 
 	// 加载 merge 数据目录
@@ -255,7 +259,9 @@ func (db *DB) Delete(key []byte) error {
 		return ErrKeyIsEmpty
 	}
 
-	readTs := db.snapshotReadTs()
+	readTxn := db.beginReadTxn()
+	defer db.endReadTxn(readTxn)
+	readTs := readTxn.ts
 	pos := db.index.Get(key)
 	if pos == nil {
 		return nil
@@ -281,7 +287,9 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 		return nil, ErrKeyIsEmpty
 	}
 
-	readTs := db.snapshotReadTs()
+	readTxn := db.beginReadTxn()
+	defer db.endReadTxn(readTxn)
+	readTs := readTxn.ts
 
 	// 从内存数据结构中取出 key 对应的索引信息
 	logRecordPos := db.index.Get(key)
@@ -296,7 +304,9 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 
 // ListKeys 获取数据库中所有的 key
 func (db *DB) ListKeys() [][]byte {
-	readTs := db.snapshotReadTs()
+	readTxn := db.beginReadTxn()
+	defer db.endReadTxn(readTxn)
+	readTs := readTxn.ts
 	iterator := db.index.Iterator(false)
 	defer iterator.Close()
 	keys := make([][]byte, 0, db.index.Size())
@@ -318,7 +328,9 @@ func (db *DB) ListKeys() [][]byte {
 
 // Fold 获取所有的数据，并执行用户指定的操作，函数返回 false 时终止遍历
 func (db *DB) Fold(fn func(key []byte, value []byte) bool) error {
-	readTs := db.snapshotReadTs()
+	readTxn := db.beginReadTxn()
+	defer db.endReadTxn(readTxn)
+	readTs := readTxn.ts
 	iterator := db.index.Iterator(false)
 	defer iterator.Close()
 	for iterator.Rewind(); iterator.Valid(); iterator.Next() {
@@ -340,11 +352,46 @@ func (db *DB) Fold(fn func(key []byte, value []byte) bool) error {
 	return nil
 }
 
-func (db *DB) snapshotReadTs() uint64 {
-	db.mu.RLock()
+type readTxn struct {
+	id uint64
+	ts uint64
+}
+
+func (db *DB) beginReadTxn() *readTxn {
+	db.readTxnMu.Lock()
 	ts := db.maxCommittedTs
-	db.mu.RUnlock()
-	return ts
+	db.nextReadTxnID++
+	id := db.nextReadTxnID
+	db.activeReadTxns[id] = ts
+	db.readTxnMu.Unlock()
+	return &readTxn{id: id, ts: ts}
+}
+
+func (db *DB) endReadTxn(txn *readTxn) {
+	if txn == nil {
+		return
+	}
+	db.readTxnMu.Lock()
+	delete(db.activeReadTxns, txn.id)
+	db.readTxnMu.Unlock()
+}
+
+func (db *DB) safePoint() uint64 {
+	db.readTxnMu.Lock()
+	defer db.readTxnMu.Unlock()
+	if len(db.activeReadTxns) == 0 {
+		return db.maxCommittedTs
+	}
+	var minTs uint64 = ^uint64(0)
+	for _, ts := range db.activeReadTxns {
+		if ts < minTs {
+			minTs = ts
+		}
+	}
+	if minTs == ^uint64(0) {
+		return db.maxCommittedTs
+	}
+	return minTs
 }
 
 func (db *DB) readLogRecord(pos *data.LogRecordPos) (*data.LogRecord, error) {

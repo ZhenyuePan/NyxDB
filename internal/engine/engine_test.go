@@ -1,7 +1,12 @@
 package db
 
 import (
+	"bytes"
+	"io"
+	"sort"
+
 	"nyxdb/internal/engine/data"
+	"nyxdb/internal/engine/fio"
 	"nyxdb/internal/utils"
 	"os"
 	"testing"
@@ -210,6 +215,72 @@ func TestDB_RecoverSkipUnfinishedTxn(t *testing.T) {
 
 	_, err = db2.Get([]byte("uncommitted"))
 	assert.Equal(t, ErrKeyNotFound, err)
+}
+
+func TestDB_MergeRespectSafePoint(t *testing.T) {
+	opts := DefaultOptions
+	opts.DataFileMergeRatio = 0
+	dir, _ := os.MkdirTemp("", "bitcask-go-merge-safe")
+	opts.DirPath = dir
+	db, err := Open(opts)
+	assert.Nil(t, err)
+	assert.NotNil(t, db)
+
+	key := []byte("mvcc-key")
+	err = db.Put(key, []byte("v1"))
+	assert.Nil(t, err)
+	ts1 := db.seqNo
+
+	err = db.Put(key, []byte("v2"))
+	assert.Nil(t, err)
+	ts2 := db.seqNo
+
+	db.readTxnMu.Lock()
+	db.activeReadTxns[999] = ts1
+	db.readTxnMu.Unlock()
+
+	err = db.Merge()
+	assert.Nil(t, err)
+
+	db.readTxnMu.Lock()
+	delete(db.activeReadTxns, 999)
+	db.readTxnMu.Unlock()
+
+	err = db.Close()
+	assert.Nil(t, err)
+
+	db2, err := Open(opts)
+	assert.Nil(t, err)
+	defer destroyDB(db2)
+
+	commitTsList := collectCommitTsForKey(t, opts.DirPath, db2.fileIds, key)
+	sort.Slice(commitTsList, func(i, j int) bool { return commitTsList[i] < commitTsList[j] })
+	assert.Equal(t, []uint64{ts1, ts2}, commitTsList)
+}
+
+func collectCommitTsForKey(t *testing.T, dir string, fileIds []int, key []byte) []uint64 {
+	var result []uint64
+	for _, fid := range fileIds {
+		dataFile, err := data.OpenDataFile(dir, uint32(fid), fio.StandardFIO)
+		assert.Nil(t, err)
+		var offset int64 = 0
+		for {
+			record, size, err := dataFile.ReadLogRecord(offset)
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				assert.Nil(t, err)
+			}
+			realKey, _ := parseLogRecordKey(record.Key)
+			if bytes.Equal(realKey, key) {
+				result = append(result, record.CommitTs)
+			}
+			offset += size
+		}
+		assert.Nil(t, dataFile.Close())
+	}
+	return result
 }
 
 func TestDB_Delete(t *testing.T) {

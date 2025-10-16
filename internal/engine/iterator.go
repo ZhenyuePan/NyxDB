@@ -11,16 +11,19 @@ type Iterator struct {
 	db        *DB
 	options   IteratorOptions
 	readTs    uint64
+	readTxn   *readTxn
 }
 
 // NewIterator 初始化迭代器
 func (db *DB) NewIterator(opts IteratorOptions) *Iterator {
+	readTxn := db.beginReadTxn()
 	indexIter := db.index.Iterator(opts.Reverse)
 	return &Iterator{
 		db:        db,
 		indexIter: indexIter,
 		options:   opts,
-		readTs:    db.snapshotReadTs(),
+		readTs:    readTxn.ts,
+		readTxn:   readTxn,
 	}
 }
 
@@ -60,6 +63,7 @@ func (it *Iterator) Value() ([]byte, error) {
 
 // Close 关闭迭代器，释放相应资源
 func (it *Iterator) Close() {
+	it.db.endReadTxn(it.readTxn)
 	it.indexIter.Close()
 }
 

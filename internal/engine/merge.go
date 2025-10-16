@@ -52,6 +52,7 @@ func (db *DB) Merge() error {
 	}
 
 	db.isMerging = true
+	safePoint := db.safePoint()
 	defer func() {
 		db.isMerging = false
 	}()
@@ -103,12 +104,32 @@ func (db *DB) Merge() error {
 		return err
 	}
 
-	// 打开 hint 文件存储索引
-	hintFile, err := data.OpenHintFile(mergePath)
-	if err != nil {
-		return err
+	type mergeVersion struct {
+		key      []byte
+		value    []byte
+		typ      data.LogRecordType
+		commitTs uint64
 	}
-	// 遍历处理每个数据文件
+
+	type mergeVersionSelect struct {
+		latest *mergeVersion
+		safe   *mergeVersion
+	}
+
+	addVersion := func(sel *mergeVersionSelect, version *mergeVersion) {
+		if sel.latest == nil || version.commitTs >= sel.latest.commitTs {
+			sel.latest = version
+		}
+		if version.commitTs <= safePoint {
+			if sel.safe == nil || version.commitTs >= sel.safe.commitTs {
+				sel.safe = version
+			}
+		}
+	}
+
+	versions := make(map[string]*mergeVersionSelect)
+	txnRecords := make(map[uint64][]*mergeVersion)
+
 	for _, dataFile := range mergeFiles {
 		var offset int64 = 0
 		for {
@@ -119,26 +140,101 @@ func (db *DB) Merge() error {
 				}
 				return err
 			}
-			// 解析拿到实际的 key
-			realKey, _ := parseLogRecordKey(logRecord.Key)
-			logRecordPos := db.index.Get(realKey)
-			// 和内存中的索引位置进行比较，如果有效则重写
-			if logRecordPos != nil &&
-				logRecordPos.Fid == dataFile.FileId &&
-				logRecordPos.Offset == offset {
-				// 清除事务标记
-				logRecord.Key = logRecordKeyWithSeq(realKey, nonTransactionSeqNo)
-				pos, err := mergeDB.appendLogRecord(logRecord)
-				if err != nil {
-					return err
+
+			realKey, seqNo := parseLogRecordKey(logRecord.Key)
+
+			if logRecord.Type == data.LogRecordTxnFinished {
+				records := txnRecords[seqNo]
+				for _, rec := range records {
+					sel := versions[string(rec.key)]
+					if sel == nil {
+						sel = &mergeVersionSelect{}
+						versions[string(rec.key)] = sel
+					}
+					addVersion(sel, rec)
 				}
-				// 将当前位置索引写到 Hint 文件当中
-				if err := hintFile.WriteHintRecord(realKey, pos); err != nil {
+				delete(txnRecords, seqNo)
+				offset += size
+				continue
+			}
+
+			if logRecord.Type != data.LogRecordNormal && logRecord.Type != data.LogRecordDeleted {
+				offset += size
+				continue
+			}
+
+			version := &mergeVersion{
+				key:      append([]byte(nil), realKey...),
+				value:    append([]byte(nil), logRecord.Value...),
+				typ:      logRecord.Type,
+				commitTs: logRecord.CommitTs,
+			}
+
+			if seqNo == nonTransactionSeqNo {
+				sel := versions[string(version.key)]
+				if sel == nil {
+					sel = &mergeVersionSelect{}
+					versions[string(version.key)] = sel
+				}
+				addVersion(sel, version)
+			} else {
+				txnRecords[seqNo] = append(txnRecords[seqNo], version)
+			}
+
+			offset += size
+		}
+	}
+
+	// 打开 hint 文件存储索引
+	hintFile, err := data.OpenHintFile(mergePath)
+	if err != nil {
+		return err
+	}
+
+	keys := make([]string, 0, len(versions))
+	for key := range versions {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, keyStr := range keys {
+		sel := versions[keyStr]
+		if sel == nil || sel.latest == nil {
+			continue
+		}
+
+		toWrite := make([]*mergeVersion, 0, 2)
+		if sel.safe != nil && sel.safe.commitTs < sel.latest.commitTs {
+			toWrite = append(toWrite, sel.safe)
+		}
+		toWrite = append(toWrite, sel.latest)
+
+		var prevPos *data.LogRecordPos
+		for _, version := range toWrite {
+			logRecord := &data.LogRecord{
+				Key:        logRecordKeyWithSeq(version.key, nonTransactionSeqNo),
+				Value:      version.value,
+				Type:       version.typ,
+				CommitTs:   version.commitTs,
+				PrevOffset: -1,
+				PrevFid:    0,
+			}
+			if prevPos != nil {
+				logRecord.PrevOffset = prevPos.Offset
+				logRecord.PrevFid = prevPos.Fid
+			}
+
+			pos, err := mergeDB.appendLogRecord(logRecord)
+			if err != nil {
+				return err
+			}
+			prevPos = pos
+
+			if version == sel.latest {
+				if err := hintFile.WriteHintRecord(version.key, pos); err != nil {
 					return err
 				}
 			}
-			// 增加 offset
-			offset += size
 		}
 	}
 
