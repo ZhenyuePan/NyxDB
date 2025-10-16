@@ -2,7 +2,7 @@ package proxy
 
 import (
 	"fmt"
-	"nyxdb/internel/db"
+	db "nyxdb/internal/engine"
 	"sync"
 )
 
@@ -119,10 +119,10 @@ func (p *Proxy) RemoveNode(address string) {
 func (p *Proxy) GetNode(address string) (*db.DB, error) {
 	p.clusterLock.RLock()
 	defer p.clusterLock.RUnlock()
-	
+
 	if db, exists := p.clusterDBs[address]; exists {
 		return db, nil
 	}
-	
+
 	return nil, fmt.Errorf("node %s not found", address)
 }

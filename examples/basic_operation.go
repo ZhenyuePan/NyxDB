@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"nyxdb/internel/db"
+	db "nyxdb/internal/engine"
 )
 
 func main() {

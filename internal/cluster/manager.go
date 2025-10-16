@@ -3,11 +3,13 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"nyxdb/internel/db"
-	"nyxdb/internel/proxy"
-	"nyxdb/internel/raft"
+	db "nyxdb/internal/engine"
+	raftnode "nyxdb/internal/node"
+	rafttransport "nyxdb/internal/raft"
+	proxy "nyxdb/internal/server/proxy"
 	"sync"
 
+	etcdraft "go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
 )
 
@@ -16,16 +18,16 @@ type Cluster struct {
 	nodeID    uint64
 	options   db.Options
 	db        *db.DB
-	raftNode  *raft.Node
+	raftNode  *raftnode.Node
 	proxy     *proxy.Proxy
-	transport raft.Transport
+	transport rafttransport.Transport
 
 	// 集群成员管理
 	members   map[uint64]string // nodeID -> address
 	membersMu sync.RWMutex
 
 	// 数据提交通道
-	commitC chan *raft.Commit
+	commitC chan *raftnode.Commit
 	errorC  chan error
 
 	// 控制
@@ -43,20 +45,20 @@ func NewCluster(nodeID uint64, options db.Options, database *db.DB) (*Cluster, e
 		options: options,
 		db:      database,
 		members: make(map[uint64]string),
-		commitC: make(chan *raft.Commit, 100),
+		commitC: make(chan *raftnode.Commit, 100),
 		errorC:  make(chan error, 100),
 		ctx:     ctx,
 		cancel:  cancel,
 	}
 
 	// 初始化传输层
-	cluster.transport = raft.NewDefaultTransport()
+	cluster.transport = rafttransport.NewDefaultTransport()
 
 	// 初始化代理
 	cluster.proxy = proxy.NewProxy(options, database)
 
 	// 初始化RAFT节点
-	raftConfig := &raft.NodeConfig{
+	raftConfig := &raftnode.NodeConfig{
 		ID:            nodeID,
 		Cluster:       cluster.buildRaftPeers(),
 		Storage:       NewRaftStorage(), // 需要实现一个持久化存储
@@ -65,7 +67,7 @@ func NewCluster(nodeID uint64, options db.Options, database *db.DB) (*Cluster, e
 		HeartbeatTick: 1,
 	}
 
-	cluster.raftNode = raft.NewNode(raftConfig)
+	cluster.raftNode = raftnode.NewNode(raftConfig)
 
 	return cluster, nil
 }
@@ -238,8 +240,8 @@ func (c *Cluster) handleErrors() {
 }
 
 // buildRaftPeers 根据配置构建RAFT peers
-func (c *Cluster) buildRaftPeers() []raft.Peer {
-	var peers []raft.Peer
+func (c *Cluster) buildRaftPeers() []etcdraft.Peer {
+	var peers []etcdraft.Peer
 
 	if c.options.ClusterConfig != nil {
 		// 根据集群配置构建peers
