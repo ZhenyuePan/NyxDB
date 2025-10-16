@@ -44,14 +44,15 @@ func NewCluster(nodeID uint64, options db.Options, database *db.DB) (*Cluster, e
 	ctx, cancel := context.WithCancel(context.Background())
 
 	cluster := &Cluster{
-		nodeID:  nodeID,
-		options: options,
-		db:      database,
-		members: make(map[uint64]string),
-		commitC: make(chan *raftnode.Commit, 100),
-		errorC:  make(chan error, 100),
-		ctx:     ctx,
-		cancel:  cancel,
+		nodeID:       nodeID,
+		options:      options,
+		db:           database,
+		members:      make(map[uint64]string),
+		commitC:      make(chan *raftnode.Commit, 100),
+		errorC:       make(chan error, 100),
+		ctx:          ctx,
+		cancel:       cancel,
+		nextCommitTs: database.MaxCommittedTs(),
 	}
 
 	// 初始化传输层
@@ -213,18 +214,20 @@ func (c *Cluster) handleCommits() {
 				continue
 			}
 
+			replOps := make([]db.ReplicatedOp, 0, len(cmd.Operations))
 			for _, op := range cmd.Operations {
-				switch op.Type {
-				case OpPut:
-					if err := c.db.Put(op.Key, op.Value); err != nil {
-						fmt.Printf("failed to apply put: %v\n", err)
-					}
-				case OpDelete:
-					if err := c.db.Delete(op.Key); err != nil {
-						fmt.Printf("failed to apply delete: %v\n", err)
-					}
+				repl := db.ReplicatedOp{Key: append([]byte(nil), op.Key...)}
+				if op.Type == OpDelete {
+					repl.Delete = true
+				} else {
+					repl.Value = append([]byte(nil), op.Value...)
 				}
+				replOps = append(replOps, repl)
 			}
+			if err := c.db.ApplyReplicated(cmd.CommitTs, replOps); err != nil {
+				fmt.Printf("failed to apply replicated command: %v\n", err)
+			}
+			c.observeCommitTs(cmd.CommitTs)
 
 		case <-c.ctx.Done():
 			return
@@ -265,6 +268,14 @@ func (c *Cluster) allocateCommitTs() uint64 {
 	defer c.commitMu.Unlock()
 	c.nextCommitTs++
 	return c.nextCommitTs
+}
+
+func (c *Cluster) observeCommitTs(ts uint64) {
+	c.commitMu.Lock()
+	if ts > c.nextCommitTs {
+		c.nextCommitTs = ts
+	}
+	c.commitMu.Unlock()
 }
 
 // RaftStorage RAFT存储实现

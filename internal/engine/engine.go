@@ -51,6 +51,13 @@ type logEntry struct {
 	typ   data.LogRecordType
 }
 
+// ReplicatedOp 表示来自分布式复制的操作
+type ReplicatedOp struct {
+	Key    []byte
+	Value  []byte
+	Delete bool
+}
+
 func (db *DB) diagf(format string, args ...interface{}) {
 	if !db.options.EnableDiagnostics {
 		return
@@ -511,6 +518,10 @@ func (db *DB) getValueForReadTs(key []byte, readTs uint64) ([]byte, error) {
 }
 
 func (db *DB) commitInternal(entries []*logEntry, forceSync bool) error {
+	return db.commit(entries, 0, forceSync, false)
+}
+
+func (db *DB) commit(entries []*logEntry, commitTs uint64, forceSync bool, override bool) error {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -518,9 +529,21 @@ func (db *DB) commitInternal(entries []*logEntry, forceSync bool) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	commitTs := db.seqNo + 1
-	db.seqNo = commitTs
-	db.diagf("commit begin ts=%d entries=%d", commitTs, len(entries))
+	var ts uint64
+	if override {
+		if commitTs == 0 {
+			return errors.New("invalid commit timestamp")
+		}
+		ts = commitTs
+		if ts > db.seqNo {
+			db.seqNo = ts
+		}
+	} else {
+		ts = db.seqNo + 1
+		db.seqNo = ts
+	}
+
+	db.diagf("commit begin ts=%d entries=%d override=%v", ts, len(entries), override)
 
 	localHeads := make(map[string]*data.LogRecordPos, len(entries))
 	writtenPositions := make([]*data.LogRecordPos, len(entries))
@@ -541,12 +564,12 @@ func (db *DB) commitInternal(entries []*logEntry, forceSync bool) error {
 			prevFid = pos.Fid
 		}
 
-		storedKey := logRecordKeyWithSeq(entry.key, commitTs)
+		storedKey := logRecordKeyWithSeq(entry.key, ts)
 		logRecord := &data.LogRecord{
 			Key:        storedKey,
 			Value:      entry.value,
 			Type:       entry.typ,
-			CommitTs:   commitTs,
+			CommitTs:   ts,
 			PrevFid:    prevFid,
 			PrevOffset: prevOffset,
 		}
@@ -560,9 +583,9 @@ func (db *DB) commitInternal(entries []*logEntry, forceSync bool) error {
 	}
 
 	finishRecord := &data.LogRecord{
-		Key:      logRecordKeyWithSeq(txnFinKey, commitTs),
+		Key:      logRecordKeyWithSeq(txnFinKey, ts),
 		Type:     data.LogRecordTxnFinished,
-		CommitTs: commitTs,
+		CommitTs: ts,
 	}
 	if _, err := db.appendLogRecord(finishRecord); err != nil {
 		return err
@@ -581,11 +604,39 @@ func (db *DB) commitInternal(entries []*logEntry, forceSync bool) error {
 		db.applyCommittedRecord(key, entry.typ, pos)
 	}
 
-	if commitTs > db.maxCommittedTs {
-		db.maxCommittedTs = commitTs
+	if ts > db.maxCommittedTs {
+		db.maxCommittedTs = ts
 	}
-	db.diagf("commit end ts=%d", commitTs)
+	db.diagf("commit end ts=%d override=%v", ts, override)
 	return nil
+}
+
+// ApplyReplicated 应用分布式复制过来的命令
+func (db *DB) ApplyReplicated(commitTs uint64, ops []ReplicatedOp) error {
+	if len(ops) == 0 {
+		return nil
+	}
+	entries := make([]*logEntry, len(ops))
+	for i, op := range ops {
+		entry := &logEntry{
+			key: append([]byte(nil), op.Key...),
+		}
+		if op.Delete {
+			entry.typ = data.LogRecordDeleted
+		} else {
+			entry.typ = data.LogRecordNormal
+			entry.value = append([]byte(nil), op.Value...)
+		}
+		entries[i] = entry
+	}
+	return db.commit(entries, commitTs, db.options.SyncWrites, true)
+}
+
+// MaxCommittedTs 返回当前最大事务提交时间戳
+func (db *DB) MaxCommittedTs() uint64 {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	return db.maxCommittedTs
 }
 
 // 追加写数据到活跃文件中

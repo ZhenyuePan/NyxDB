@@ -288,6 +288,34 @@ func TestReadTxnSnapshotIsolation(t *testing.T) {
 	rt.Close()
 }
 
+func TestDB_ApplyReplicated(t *testing.T) {
+	opts := DefaultOptions
+	dir, _ := os.MkdirTemp("", "bitcask-go-replicated")
+	opts.DirPath = dir
+	db, err := Open(opts)
+	assert.Nil(t, err)
+	defer destroyDB(db)
+
+	ops := []ReplicatedOp{{Key: []byte("rk"), Value: []byte("v1")}}
+	err = db.ApplyReplicated(5, ops)
+	assert.Nil(t, err)
+
+	val, err := db.Get([]byte("rk"))
+	assert.Nil(t, err)
+	assert.Equal(t, []byte("v1"), val)
+	assert.Equal(t, uint64(5), db.MaxCommittedTs())
+	assert.Equal(t, uint64(5), db.seqNo)
+
+	ops2 := []ReplicatedOp{{Key: []byte("rk"), Delete: true}}
+	err = db.ApplyReplicated(7, ops2)
+	assert.Nil(t, err)
+
+	_, err = db.Get([]byte("rk"))
+	assert.Equal(t, ErrKeyNotFound, err)
+	assert.Equal(t, uint64(7), db.MaxCommittedTs())
+	assert.Equal(t, uint64(7), db.seqNo)
+}
+
 func collectCommitTsForKey(t *testing.T, dir string, fileIds []int, key []byte) []uint64 {
 	var result []uint64
 	for _, fid := range fileIds {
