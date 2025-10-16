@@ -12,5 +12,10 @@ cluster:
   snapshotInterval: 5m
   snapshotThreshold: 2048
   snapshotCatchUpEntries: 128
+  # Optional guards for snapshot triggering
+  # Trigger when data dir size exceeds this (bytes). 0 to disable.
+  snapshotDirSizeThreshold: 0
+  # Max duration considered healthy for a single snapshot operation.
+  snapshotMaxDuration: 2m
 grpc:
   address: 127.0.0.1:10001

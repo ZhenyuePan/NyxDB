@@ -109,6 +109,7 @@ Usage:
   nyxdb-cli admin leave   --addr <host:port> --node <id>
   nyxdb-cli admin merge   --addr <host:port> [--force]
   nyxdb-cli admin snapshot --addr <host:port> [--force]
+  nyxdb-cli admin snapshot-status --addr <host:port>
 `)
 }
 
@@ -143,7 +144,7 @@ func adminCmd(args []string) {
 		os.Exit(1)
 	}
 	sub := args[0]
-	switch sub {
+    switch sub {
 	case "members":
 		adminMembers(args[1:])
 	case "join":
@@ -152,12 +153,14 @@ func adminCmd(args []string) {
 		adminLeave(args[1:])
 	case "merge":
 		adminMerge(args[1:])
-	case "snapshot":
-		adminSnapshot(args[1:])
-	default:
-		usage()
-		os.Exit(1)
-	}
+    case "snapshot":
+        adminSnapshot(args[1:])
+    case "snapshot-status":
+        adminSnapshotStatus(args[1:])
+    default:
+        usage()
+        os.Exit(1)
+    }
 }
 
 func kvPut(args []string) {
@@ -427,5 +430,34 @@ func adminSnapshot(args []string) {
 		fmt.Fprintf(os.Stderr, "snapshot error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("OK")
+    fmt.Println("OK")
+}
+
+func adminSnapshotStatus(args []string) {
+    fs := flag.NewFlagSet("admin snapshot-status", flag.ExitOnError)
+    addr := fs.String("addr", "127.0.0.1:10001", "gRPC address")
+    _ = fs.Parse(args)
+
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+    mgr := newConnManager(*addr)
+
+    req := &api.SnapshotStatusRequest{}
+    resp := new(api.SnapshotStatusResponse)
+    if err := mgr.invokeWithRetry(ctx, "/nyxdb.api.Admin/SnapshotStatus", req, resp); err != nil {
+        fmt.Fprintf(os.Stderr, "snapshot-status error: %v\n", err)
+        os.Exit(1)
+    }
+    fmt.Printf("in_progress=%v last_index=%d entries_since=%d applied=%d last_raft=%d\n", resp.InProgress, resp.LastSnapshotIndex, resp.EntriesSince, resp.AppliedIndex, resp.LastRaftIndex)
+    if resp.InProgress {
+        if resp.InProgressSinceUnix > 0 {
+            fmt.Printf("in_progress_since=%s\n", time.Unix(resp.InProgressSinceUnix, 0).Format(time.RFC3339))
+        }
+    }
+    if resp.LastSnapshotTimeUnix > 0 {
+        fmt.Printf("last_snapshot_time=%s\n", time.Unix(resp.LastSnapshotTimeUnix, 0).Format(time.RFC3339))
+    }
+    if resp.Leader != "" {
+        fmt.Printf("leader=%s\n", resp.Leader)
+    }
 }

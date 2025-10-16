@@ -48,11 +48,20 @@ type ClusterOptions struct {
 	// 使用的路由算法类型
 	RouterType RouterType
 
-	// 自动快照相关配置
-	AutoSnapshot          bool
-	SnapshotInterval      time.Duration
-	SnapshotThreshold     uint64
-	SnapshotCatchUpEntries uint64
+    // 自动快照相关配置
+    AutoSnapshot          bool
+    SnapshotInterval      time.Duration
+    SnapshotThreshold     uint64
+    SnapshotCatchUpEntries uint64
+
+    // SnapshotDirSizeThreshold is an optional threshold (in bytes) for
+    // triggering snapshots based on on-disk size of the data directory.
+    // If zero, this dimension is ignored.
+    SnapshotDirSizeThreshold uint64
+
+    // SnapshotMaxDuration bounds a single snapshot operation duration for
+    // guard/diagnostics purposes. If zero, a default guard may be used.
+    SnapshotMaxDuration time.Duration
 }
 
 // IteratorOptions 索引迭代器配置项

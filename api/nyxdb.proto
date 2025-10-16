@@ -85,6 +85,19 @@ message TriggerSnapshotRequest {
 
 message TriggerSnapshotResponse {}
 
+message SnapshotStatusRequest {}
+
+message SnapshotStatusResponse {
+  bool in_progress = 1;
+  uint64 last_snapshot_index = 2;
+  uint64 entries_since = 3;
+  int64 last_snapshot_time_unix = 4;
+  int64 in_progress_since_unix = 5;
+  string leader = 6;
+  uint64 applied_index = 7;
+  uint64 last_raft_index = 8;
+}
+
 message SnapshotPayload {
   bytes backup = 1;
   uint64 next_commit_ts = 2;
@@ -116,4 +129,5 @@ service Admin {
   rpc Members(MembersRequest) returns (MembersResponse);
   rpc TriggerMerge(TriggerMergeRequest) returns (TriggerMergeResponse);
   rpc TriggerSnapshot(TriggerSnapshotRequest) returns (TriggerSnapshotResponse);
+  rpc SnapshotStatus(SnapshotStatusRequest) returns (SnapshotStatusResponse);
 }
