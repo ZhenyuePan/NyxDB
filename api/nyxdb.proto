@@ -79,6 +79,17 @@ message TriggerMergeRequest {
 
 message TriggerMergeResponse {}
 
+message RaftMessage {
+  uint64 to = 1;
+  bytes message = 2;
+}
+
+message RaftAck {}
+
+service RaftTransport {
+  rpc Send(stream RaftMessage) returns (RaftAck);
+}
+
 service KV {
   rpc Put(PutRequest) returns (PutResponse);
   rpc Get(GetRequest) returns (GetResponse);

@@ -3,12 +3,15 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+
 	db "nyxdb/internal/engine"
 	raftnode "nyxdb/internal/node"
 	rafttransport "nyxdb/internal/raft"
 	replication "nyxdb/internal/replication"
 	proxy "nyxdb/internal/server/proxy"
-	"sync"
 
 	etcdraft "go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
@@ -41,9 +44,62 @@ type Cluster struct {
 	wg     sync.WaitGroup
 }
 
+type peerAddress struct {
+	id   uint64
+	addr string
+}
+
+func parsePeerAddresses(entries []string) []peerAddress {
+	peers := make([]peerAddress, 0, len(entries))
+	for idx, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		var (
+			id   uint64
+			addr string
+			err  error
+		)
+		if strings.Contains(entry, "@") {
+			parts := strings.SplitN(entry, "@", 2)
+			id, err = strconv.ParseUint(parts[0], 10, 64)
+			if err == nil {
+				addr = parts[1]
+			}
+		} else if strings.Contains(entry, "=") {
+			parts := strings.SplitN(entry, "=", 2)
+			id, err = strconv.ParseUint(parts[0], 10, 64)
+			if err == nil {
+				addr = parts[1]
+			}
+		} else {
+			id = uint64(idx + 1)
+			addr = entry
+		}
+		if err != nil || addr == "" {
+			continue
+		}
+		peers = append(peers, peerAddress{id: id, addr: addr})
+	}
+	return peers
+}
+
 // NewCluster 创建一个新的集群实例
 func NewCluster(nodeID uint64, options db.Options, database *db.DB) (*Cluster, error) {
+	return NewClusterWithTransport(nodeID, options, database, nil)
+}
+
+func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB, transport rafttransport.Transport) (*Cluster, error) {
 	ctx, cancel := context.WithCancel(context.Background())
+
+	if transport == nil {
+		if options.ClusterConfig != nil && options.ClusterConfig.ClusterMode {
+			transport = rafttransport.NewGRPCTransport(nodeID, nil)
+		} else {
+			transport = rafttransport.NewDefaultTransport()
+		}
+	}
 
 	cluster := &Cluster{
 		nodeID:       nodeID,
@@ -55,15 +111,17 @@ func NewCluster(nodeID uint64, options db.Options, database *db.DB) (*Cluster, e
 		ctx:          ctx,
 		cancel:       cancel,
 		nextCommitTs: database.MaxCommittedTs(),
+		transport:    transport,
 	}
 
 	cluster.applier = replication.NewApplier(database)
 
-	// 初始化传输层
-	cluster.transport = rafttransport.NewDefaultTransport()
-
 	// 初始化代理
 	cluster.proxy = proxy.NewProxy(options, database)
+
+	if options.ClusterConfig != nil && options.ClusterConfig.NodeAddress != "" {
+		_ = cluster.transport.AddMember(nodeID, []string{options.ClusterConfig.NodeAddress})
+	}
 
 	// 初始化RAFT节点
 	raftConfig := &raftnode.NodeConfig{
@@ -139,6 +197,10 @@ func (c *Cluster) Delete(key []byte) error {
 
 	// 通过RAFT提交命令
 	return c.raftNode.Propose(data)
+}
+
+func (c *Cluster) RaftNode() *raftnode.Node {
+	return c.raftNode
 }
 
 // Get 从本地数据库获取数据
@@ -245,13 +307,19 @@ func (c *Cluster) handleErrors() {
 
 // buildRaftPeers 根据配置构建RAFT peers
 func (c *Cluster) buildRaftPeers() []etcdraft.Peer {
-	var peers []etcdraft.Peer
-
-	if c.options.ClusterConfig != nil {
-		// 根据集群配置构建peers
-		// 这里需要根据实际配置实现
+	cfg := c.options.ClusterConfig
+	if cfg == nil || !cfg.ClusterMode {
+		return nil
 	}
-
+	entries := parsePeerAddresses(cfg.ClusterAddresses)
+	peers := make([]etcdraft.Peer, 0, len(entries))
+	c.membersMu.Lock()
+	for _, p := range entries {
+		peers = append(peers, etcdraft.Peer{ID: p.id})
+		c.members[p.id] = p.addr
+		_ = c.transport.AddMember(p.id, []string{p.addr})
+	}
+	c.membersMu.Unlock()
 	return peers
 }
 

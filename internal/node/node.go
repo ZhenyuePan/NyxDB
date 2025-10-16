@@ -126,6 +126,11 @@ func (n *Node) ProposeConfChange(cc raftpb.ConfChange) error {
 	return n.raftNode.ProposeConfChange(ctx, cc)
 }
 
+// Step processes an incoming raft message.
+func (n *Node) Step(ctx context.Context, msg raftpb.Message) error {
+	return n.raftNode.Step(ctx, msg)
+}
+
 // run 运行RAFT节点主循环
 func (n *Node) run() {
 	ticker := time.NewTicker(time.Millisecond * 100)

@@ -38,6 +38,11 @@ func New(cfg Config, cl *cluster.Cluster, binder ServiceBinder) *Server {
 	return s
 }
 
+// NewDefault creates a server using the default binder.
+func NewDefault(cfg Config, cl *cluster.Cluster) *Server {
+	return New(cfg, cl, DefaultBinder{})
+}
+
 // Start begins listening on the configured address. Currently services are not registered;
 // this is a placeholder for future implementation.
 func (s *Server) Start(ctx context.Context) error {
