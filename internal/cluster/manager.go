@@ -5,6 +5,7 @@ import (
 	"fmt"
 	db "nyxdb/internal/engine"
 	raftnode "nyxdb/internal/node"
+	replication "nyxdb/internal/replication"
 	rafttransport "nyxdb/internal/raft"
 	proxy "nyxdb/internal/server/proxy"
 	"sync"
@@ -26,8 +27,9 @@ type Cluster struct {
 	members   map[uint64]string // nodeID -> address
 	membersMu sync.RWMutex
 
-	commitMu     sync.Mutex
-	nextCommitTs uint64
+    commitMu     sync.Mutex
+    nextCommitTs uint64
+    applier      *replication.Applier
 
 	// 数据提交通道
 	commitC chan *raftnode.Commit
@@ -43,7 +45,7 @@ type Cluster struct {
 func NewCluster(nodeID uint64, options db.Options, database *db.DB) (*Cluster, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	cluster := &Cluster{
+    cluster := &Cluster{
 		nodeID:       nodeID,
 		options:      options,
 		db:           database,
@@ -54,6 +56,8 @@ func NewCluster(nodeID uint64, options db.Options, database *db.DB) (*Cluster, e
 		cancel:       cancel,
 		nextCommitTs: database.MaxCommittedTs(),
 	}
+
+	cluster.applier = replication.NewApplier(database)
 
 	// 初始化传输层
 	cluster.transport = rafttransport.NewDefaultTransport()
@@ -103,10 +107,10 @@ func (c *Cluster) Stop() error {
 
 // Put 通过RAFT集群存储数据
 func (c *Cluster) Put(key, value []byte) error {
-	cmd := &Command{
+	cmd := &replication.Command{
 		CommitTs: c.allocateCommitTs(),
-		Operations: []Operation{
-			{Key: append([]byte(nil), key...), Value: append([]byte(nil), value...), Type: OpPut},
+		Operations: []replication.Operation{
+			{Key: append([]byte(nil), key...), Value: append([]byte(nil), value...), Type: replication.OpPut},
 		},
 	}
 
@@ -121,10 +125,10 @@ func (c *Cluster) Put(key, value []byte) error {
 
 // Delete 通过RAFT集群删除数据
 func (c *Cluster) Delete(key []byte) error {
-	cmd := &Command{
+	cmd := &replication.Command{
 		CommitTs: c.allocateCommitTs(),
-		Operations: []Operation{
-			{Key: append([]byte(nil), key...), Type: OpDelete},
+		Operations: []replication.Operation{
+			{Key: append([]byte(nil), key...), Type: replication.OpDelete},
 		},
 	}
 
@@ -208,26 +212,14 @@ func (c *Cluster) handleCommits() {
 			}
 
 			// 解析命令
-			cmd, err := UnmarshalCommand(commit.Data)
-			if err != nil {
-				fmt.Printf("Failed to unmarshal command: %v\n", err)
-				continue
-			}
-
-			replOps := make([]db.ReplicatedOp, 0, len(cmd.Operations))
-			for _, op := range cmd.Operations {
-				repl := db.ReplicatedOp{Key: append([]byte(nil), op.Key...)}
-				if op.Type == OpDelete {
-					repl.Delete = true
-				} else {
-					repl.Value = append([]byte(nil), op.Value...)
-				}
-				replOps = append(replOps, repl)
-			}
-			if err := c.db.ApplyReplicated(cmd.CommitTs, replOps); err != nil {
-				fmt.Printf("failed to apply replicated command: %v\n", err)
-			}
-			c.observeCommitTs(cmd.CommitTs)
+            ts, err := c.applier.Apply(commit.Data)
+            if err != nil {
+                fmt.Printf("failed to apply commit: %v\n", err)
+                continue
+            }
+            if ts > 0 {
+                c.observeCommitTs(ts)
+            }
 
 		case <-c.ctx.Done():
 			return
