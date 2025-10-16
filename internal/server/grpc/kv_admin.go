@@ -174,9 +174,13 @@ func registerKVAdminServers(s *grpc.Server, cl *cluster.Cluster) {
 	registerAdminServer(s, NewAdminService(cl))
 }
 
+type kvServerWrapper interface {
+	api.KVServer
+}
+
 var kvServiceDesc = grpc.ServiceDesc{
 	ServiceName: "nyxdb.api.KV",
-	HandlerType: (*KVService)(nil),
+	HandlerType: (*kvServerWrapper)(nil),
 	Methods: []grpc.MethodDesc{
 		{MethodName: "Put", Handler: _KV_Put_Handler},
 		{MethodName: "Get", Handler: _KV_Get_Handler},
@@ -233,9 +237,13 @@ func _KV_Delete_Handler(srv interface{}, ctx context.Context, dec func(interface
 	return interceptor(ctx, in, info, handler)
 }
 
+type adminServerWrapper interface {
+	api.AdminServer
+}
+
 var adminServiceDesc = grpc.ServiceDesc{
 	ServiceName: "nyxdb.api.Admin",
-	HandlerType: (*AdminService)(nil),
+	HandlerType: (*adminServerWrapper)(nil),
 	Methods: []grpc.MethodDesc{
 		{MethodName: "Join", Handler: _Admin_Join_Handler},
 		{MethodName: "Leave", Handler: _Admin_Leave_Handler},
