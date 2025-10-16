@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"nyxdb/internal/engine/data"
 	"nyxdb/internal/engine/fio"
 	"nyxdb/internal/engine/index"
@@ -48,6 +49,13 @@ type logEntry struct {
 	key   []byte
 	value []byte
 	typ   data.LogRecordType
+}
+
+func (db *DB) diagf(format string, args ...interface{}) {
+	if !db.options.EnableDiagnostics {
+		return
+	}
+	log.Printf("[nyxdb] "+format, args...)
 }
 
 func (db *DB) applyCommittedRecord(key []byte, typ data.LogRecordType, pos *data.LogRecordPos) {
@@ -146,6 +154,8 @@ func Open(options Options) (*DB, error) {
 		db.maxCommittedTs = db.seqNo
 	}
 
+	db.diagf("open complete: initial=%v seqNo=%d maxCommitted=%d", db.isInitial, db.seqNo, db.maxCommittedTs)
+
 	return db, nil
 }
 
@@ -166,6 +176,7 @@ func (db *DB) Close() error {
 	}
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	db.diagf("closing database: seqNo=%d maxCommitted=%d", db.seqNo, db.maxCommittedTs)
 
 	// 保存当前事务序列号
 	seqNoFile, err := data.OpenSeqNoFile(db.options.DirPath)
@@ -261,12 +272,7 @@ func (db *DB) Delete(key []byte) error {
 
 	readTxn := db.beginReadTxn()
 	defer db.endReadTxn(readTxn)
-	readTs := readTxn.ts
-	pos := db.index.Get(key)
-	if pos == nil {
-		return nil
-	}
-	if _, err := db.getValueByPositionWithReadTs(pos, readTs); err == ErrKeyNotFound {
+	if _, err := db.getValueForReadTs(key, readTxn.ts); err == ErrKeyNotFound {
 		return nil
 	} else if err != nil {
 		return err
@@ -289,17 +295,9 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 
 	readTxn := db.beginReadTxn()
 	defer db.endReadTxn(readTxn)
-	readTs := readTxn.ts
 
 	// 从内存数据结构中取出 key 对应的索引信息
-	logRecordPos := db.index.Get(key)
-	// 如果 key 不在内存索引中，说明 key 不存在
-	if logRecordPos == nil {
-		return nil, ErrKeyNotFound
-	}
-
-	// 从数据文件中获取 value
-	return db.getValueByPositionWithReadTs(logRecordPos, readTs)
+	return db.getValueForReadTs(key, readTxn.ts)
 }
 
 // ListKeys 获取数据库中所有的 key
@@ -394,6 +392,50 @@ func (db *DB) safePoint() uint64 {
 	return minTs
 }
 
+// ReadTxn 对外暴露的读事务句柄
+type ReadTxn struct {
+	db    *DB
+	inner *readTxn
+	once  sync.Once
+}
+
+// BeginReadTxn 开启一个快照读事务
+func (db *DB) BeginReadTxn() *ReadTxn {
+	inner := db.beginReadTxn()
+	db.diagf("begin read txn id=%d readTs=%d", inner.id, inner.ts)
+	return &ReadTxn{db: db, inner: inner}
+}
+
+// ReadTs 返回该读事务捕获的快照时间戳
+func (rt *ReadTxn) ReadTs() uint64 {
+	if rt == nil || rt.inner == nil {
+		return 0
+	}
+	return rt.inner.ts
+}
+
+// Close 结束读事务
+func (rt *ReadTxn) Close() {
+	if rt == nil || rt.db == nil {
+		return
+	}
+	rt.once.Do(func() {
+		rt.db.endReadTxn(rt.inner)
+		rt.db.diagf("end read txn id=%d", rt.inner.id)
+	})
+}
+
+// Get 在读事务快照下读取数据
+func (rt *ReadTxn) Get(key []byte) ([]byte, error) {
+	if rt == nil || rt.db == nil {
+		return nil, ErrDatabaseIsUsing
+	}
+	if len(key) == 0 {
+		return nil, ErrKeyIsEmpty
+	}
+	return rt.db.getValueForReadTs(key, rt.inner.ts)
+}
+
 func (db *DB) readLogRecord(pos *data.LogRecordPos) (*data.LogRecord, error) {
 	db.mu.RLock()
 	var dataFile *data.DataFile
@@ -460,6 +502,14 @@ func (db *DB) getValueByPositionWithReadTs(logRecordPos *data.LogRecordPos, read
 	return nil, ErrKeyNotFound
 }
 
+func (db *DB) getValueForReadTs(key []byte, readTs uint64) ([]byte, error) {
+	pos := db.index.Get(key)
+	if pos == nil {
+		return nil, ErrKeyNotFound
+	}
+	return db.getValueByPositionWithReadTs(pos, readTs)
+}
+
 func (db *DB) commitInternal(entries []*logEntry, forceSync bool) error {
 	if len(entries) == 0 {
 		return nil
@@ -470,6 +520,7 @@ func (db *DB) commitInternal(entries []*logEntry, forceSync bool) error {
 
 	commitTs := db.seqNo + 1
 	db.seqNo = commitTs
+	db.diagf("commit begin ts=%d entries=%d", commitTs, len(entries))
 
 	localHeads := make(map[string]*data.LogRecordPos, len(entries))
 	writtenPositions := make([]*data.LogRecordPos, len(entries))
@@ -533,6 +584,7 @@ func (db *DB) commitInternal(entries []*logEntry, forceSync bool) error {
 	if commitTs > db.maxCommittedTs {
 		db.maxCommittedTs = commitTs
 	}
+	db.diagf("commit end ts=%d", commitTs)
 	return nil
 }
 
@@ -673,6 +725,7 @@ func (db *DB) loadIndexFromDataFiles() error {
 	var currentSeqNo = nonTransactionSeqNo
 
 	// 遍历所有的文件id，处理文件中的记录
+	db.diagf("loadIndex: start scanning %d files", len(db.fileIds))
 	for i, fid := range db.fileIds {
 		var fileId = uint32(fid)
 		// 如果比最近未参与 merge 的文件 id 更小，则说明已经从 Hint 文件中加载索引了
@@ -708,6 +761,7 @@ func (db *DB) loadIndexFromDataFiles() error {
 				}
 			} else {
 				if logRecord.Type == data.LogRecordTxnFinished {
+					db.diagf("loadIndex: apply committed txn seq=%d records=%d", seqNo, len(transactionRecords[seqNo]))
 					for _, txnRecord := range transactionRecords[seqNo] {
 						db.applyCommittedRecord(txnRecord.Record.Key, txnRecord.Record.Type, txnRecord.Pos)
 					}
@@ -739,6 +793,7 @@ func (db *DB) loadIndexFromDataFiles() error {
 	if currentSeqNo > db.maxCommittedTs {
 		db.maxCommittedTs = currentSeqNo
 	}
+	db.diagf("loadIndex: completed seqNo=%d", currentSeqNo)
 	return nil
 }
 

@@ -28,6 +28,9 @@ type Options struct {
 
 	// 集群配置
 	ClusterConfig *ClusterOptions
+
+	// 是否启用诊断日志
+	EnableDiagnostics bool
 }
 
 // ClusterOptions 集群配置选项

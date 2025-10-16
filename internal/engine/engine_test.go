@@ -258,6 +258,36 @@ func TestDB_MergeRespectSafePoint(t *testing.T) {
 	assert.Equal(t, []uint64{ts1, ts2}, commitTsList)
 }
 
+func TestReadTxnSnapshotIsolation(t *testing.T) {
+	opts := DefaultOptions
+	dir, _ := os.MkdirTemp("", "bitcask-go-readtxn")
+	opts.DirPath = dir
+	db, err := Open(opts)
+	assert.Nil(t, err)
+	defer destroyDB(db)
+
+	key := []byte("rt-key")
+	err = db.Put(key, []byte("v1"))
+	assert.Nil(t, err)
+
+	rt := db.BeginReadTxn()
+	defer rt.Close()
+	assert.NotNil(t, rt)
+
+	err = db.Put(key, []byte("v2"))
+	assert.Nil(t, err)
+
+	valOld, err := rt.Get(key)
+	assert.Nil(t, err)
+	assert.Equal(t, []byte("v1"), valOld)
+
+	valNew, err := db.Get(key)
+	assert.Nil(t, err)
+	assert.Equal(t, []byte("v2"), valNew)
+
+	rt.Close()
+}
+
 func collectCommitTsForKey(t *testing.T, dir string, fileIds []int, key []byte) []uint64 {
 	var result []uint64
 	for _, fid := range fileIds {

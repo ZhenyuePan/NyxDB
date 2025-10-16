@@ -17,30 +17,42 @@ const (
 )
 
 // Merge 清理无效数据，生成 Hint 文件
+type MergeOptions struct {
+	Force              bool
+	SafePointOverride  *uint64
+	DiagnosticsContext string
+}
+
 func (db *DB) Merge() error {
-	// 如果数据库为空，则直接返回
+	return db.MergeWithOptions(MergeOptions{})
+}
+
+func (db *DB) MergeWithOptions(opts MergeOptions) error {
 	if db.activeFile == nil {
 		return nil
 	}
+
 	db.mu.Lock()
-	// 如果 merge 正在进行当中，则直接返回
 	if db.isMerging {
 		db.mu.Unlock()
 		return ErrMergeIsProgress
 	}
 
-	// 查看可以 merge 的数据量是否达到了阈值
+	db.diagf("merge start ctx=%s force=%v", opts.DiagnosticsContext, opts.Force)
+
 	totalSize, err := utils.DirSize(db.options.DirPath)
 	if err != nil {
 		db.mu.Unlock()
 		return err
 	}
-	if float32(db.reclaimSize)/float32(totalSize) < db.options.DataFileMergeRatio {
-		db.mu.Unlock()
-		return ErrMergeRatioUnreached
+
+	if !opts.Force {
+		if float32(db.reclaimSize)/float32(totalSize) < db.options.DataFileMergeRatio {
+			db.mu.Unlock()
+			return ErrMergeRatioUnreached
+		}
 	}
 
-	// 查看剩余的空间容量是否可以容纳 merge 之后的数据量
 	availableDiskSize, err := utils.AvailableDiskSize()
 	if err != nil {
 		db.mu.Unlock()
@@ -53,8 +65,13 @@ func (db *DB) Merge() error {
 
 	db.isMerging = true
 	safePoint := db.safePoint()
+	if opts.SafePointOverride != nil {
+		safePoint = *opts.SafePointOverride
+	}
+	db.diagf("merge safepoint=%d totalSize=%d reclaim=%d", safePoint, totalSize, db.reclaimSize)
 	defer func() {
 		db.isMerging = false
+		db.diagf("merge end ctx=%s", opts.DiagnosticsContext)
 	}()
 
 	// 持久化当前活跃文件
@@ -99,10 +116,12 @@ func (db *DB) Merge() error {
 	mergeOptions := db.options
 	mergeOptions.DirPath = mergePath
 	mergeOptions.SyncWrites = false
+	mergeOptions.EnableDiagnostics = false
 	mergeDB, err := Open(mergeOptions)
 	if err != nil {
 		return err
 	}
+	defer mergeDB.Close()
 
 	type mergeVersion struct {
 		key      []byte
@@ -196,6 +215,7 @@ func (db *DB) Merge() error {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	db.diagf("merge writing keys=%d", len(keys))
 
 	for _, keyStr := range keys {
 		sel := versions[keyStr]
