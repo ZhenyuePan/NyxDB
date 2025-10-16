@@ -1,6 +1,7 @@
 package benchmark
 
 import (
+	"bytes"
 	"math/rand"
 	db "nyxdb/internal/engine"
 	"nyxdb/internal/utils"
@@ -61,5 +62,32 @@ func Benchmark_Delete(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		err := dbInstance.Delete(utils.GetTestKey(rand.Int()))
 		assert.Nil(b, err)
+	}
+}
+
+func Benchmark_ReadTxnSnapshot(b *testing.B) {
+	key := []byte("benchmark-readtxn")
+	currentVal := []byte("init-value")
+	assert.Nil(b, dbInstance.Put(key, currentVal))
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		rt := dbInstance.BeginReadTxn()
+		oldVal := append([]byte(nil), currentVal...)
+
+		newVal := utils.RandomValue(64)
+		err := dbInstance.Put(key, newVal)
+		assert.Nil(b, err)
+
+		val, err := rt.Get(key)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if !bytes.Equal(val, oldVal) {
+			b.Fatalf("snapshot read mismatch, expected %q got %q", oldVal, val)
+		}
+		rt.Close()
+		currentVal = newVal
 	}
 }
