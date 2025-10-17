@@ -1,0 +1,23 @@
+        nodeID: 3
+        engine:
+          dir: /tmp/nyxdb-node3
+          enableDiagnostics: true
+        cluster:
+          clusterMode: true
+          nodeAddress: 127.0.0.1:19003
+          clusterAddresses:
+    - 1@127.0.0.1:19001
+    - 2@127.0.0.1:19002
+    - 3@127.0.0.1:19003
+          autoSnapshot: true
+          snapshotInterval: 5m
+          snapshotThreshold: 2048
+          snapshotCatchUpEntries: 128
+          snapshotDirSizeThreshold: 0
+          snapshotMaxDuration: 2m
+          snapshotMinInterval: 2m
+          snapshotMaxAppliedLag: 0
+        grpc:
+          address: 127.0.0.1:10003
+        observability:
+          metricsAddress: 127.0.0.1:2113
