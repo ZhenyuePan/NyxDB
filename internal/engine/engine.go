@@ -190,11 +190,14 @@ func (db *DB) Close() error {
 	if err != nil {
 		return err
 	}
-	record := &data.LogRecord{
-		Key:   []byte(seqNoKey),
-		Value: []byte(strconv.FormatUint(db.seqNo, 10)),
+	record := &data.LogEntry{
+		Record: data.LogRecord{
+			Key:   []byte(seqNoKey),
+			Value: []byte(strconv.FormatUint(db.seqNo, 10)),
+			Type:  data.LogRecordNormal,
+		},
 	}
-	encRecord, _ := data.EncodeLogRecord(record)
+	encRecord, _ := data.EncodeLogEntry(record)
 	if err := seqNoFile.Write(encRecord); err != nil {
 		return err
 	}
@@ -443,7 +446,7 @@ func (rt *ReadTxn) Get(key []byte) ([]byte, error) {
 	return rt.db.getValueForReadTs(key, rt.inner.ts)
 }
 
-func (db *DB) readLogRecord(pos *data.LogRecordPos) (*data.LogRecord, error) {
+func (db *DB) readLogEntry(pos *data.LogRecordPos) (*data.LogEntry, error) {
 	db.mu.RLock()
 	var dataFile *data.DataFile
 	if db.activeFile != nil && db.activeFile.FileId == pos.Fid {
@@ -457,47 +460,47 @@ func (db *DB) readLogRecord(pos *data.LogRecordPos) (*data.LogRecord, error) {
 		return nil, ErrDataFileNotFound
 	}
 
-	logRecord, _, err := dataFile.ReadLogRecord(pos.Offset)
+	entry, _, err := dataFile.ReadLogRecord(pos.Offset)
 	if err != nil {
 		return nil, err
 	}
-	return logRecord, nil
+	return entry, nil
 }
 
 func (db *DB) getValueByPositionWithReadTs(logRecordPos *data.LogRecordPos, readTs uint64) ([]byte, error) {
 	current := logRecordPos
 	visited := 0
 	for current != nil {
-		logRecord, err := db.readLogRecord(current)
+		entry, err := db.readLogEntry(current)
 		if err != nil {
 			return nil, err
 		}
 
-		commitTs := logRecord.CommitTs
+		commitTs := entry.Meta.CommitTs
 		if commitTs == 0 || commitTs <= readTs {
-			if logRecord.Type == data.LogRecordDeleted {
+			if entry.Record.Type == data.LogRecordDeleted {
 				return nil, ErrKeyNotFound
 			}
-			return logRecord.Value, nil
+			return entry.Record.Value, nil
 		}
 
-		if logRecord.PrevOffset < 0 {
+		if entry.Meta.PrevOffset < 0 {
 			return nil, ErrKeyNotFound
 		}
 
-		nextFid := logRecord.PrevFid
+		nextFid := entry.Meta.PrevFid
 		if nextFid == 0 {
 			nextFid = current.Fid
 		}
 
-		if nextFid == current.Fid && logRecord.PrevOffset == current.Offset {
+		if nextFid == current.Fid && entry.Meta.PrevOffset == current.Offset {
 			// 避免意外循环
 			return nil, ErrKeyNotFound
 		}
 
 		current = &data.LogRecordPos{
 			Fid:    nextFid,
-			Offset: logRecord.PrevOffset,
+			Offset: entry.Meta.PrevOffset,
 			Size:   0,
 		}
 
@@ -565,16 +568,20 @@ func (db *DB) commit(entries []*logEntry, commitTs uint64, forceSync bool, overr
 		}
 
 		storedKey := logRecordKeyWithSeq(entry.key, ts)
-		logRecord := &data.LogRecord{
-			Key:        storedKey,
-			Value:      entry.value,
-			Type:       entry.typ,
-			CommitTs:   ts,
-			PrevFid:    prevFid,
-			PrevOffset: prevOffset,
+		logEntry := &data.LogEntry{
+			Record: data.LogRecord{
+				Key:   storedKey,
+				Value: entry.value,
+				Type:  entry.typ,
+			},
+			Meta: data.LogMeta{
+				CommitTs:   ts,
+				PrevFid:    prevFid,
+				PrevOffset: prevOffset,
+			},
 		}
 
-		pos, err := db.appendLogRecord(logRecord)
+		pos, err := db.appendLogEntry(logEntry)
 		if err != nil {
 			return err
 		}
@@ -582,12 +589,14 @@ func (db *DB) commit(entries []*logEntry, commitTs uint64, forceSync bool, overr
 		writtenPositions[i] = pos
 	}
 
-	finishRecord := &data.LogRecord{
-		Key:      logRecordKeyWithSeq(txnFinKey, ts),
-		Type:     data.LogRecordTxnFinished,
-		CommitTs: ts,
+	finishRecord := &data.LogEntry{
+		Record: data.LogRecord{
+			Key:  logRecordKeyWithSeq(txnFinKey, ts),
+			Type: data.LogRecordTxnFinished,
+		},
+		Meta: data.LogMeta{CommitTs: ts},
 	}
-	if _, err := db.appendLogRecord(finishRecord); err != nil {
+	if _, err := db.appendLogEntry(finishRecord); err != nil {
 		return err
 	}
 
@@ -640,7 +649,7 @@ func (db *DB) MaxCommittedTs() uint64 {
 }
 
 // 追加写数据到活跃文件中
-func (db *DB) appendLogRecord(logRecord *data.LogRecord) (*data.LogRecordPos, error) {
+func (db *DB) appendLogEntry(entry *data.LogEntry) (*data.LogRecordPos, error) {
 	// 判断当前活跃数据文件是否存在，因为数据库在没有写入的时候是没有文件生成的
 	// 如果为空则初始化数据文件
 	if db.activeFile == nil {
@@ -650,7 +659,7 @@ func (db *DB) appendLogRecord(logRecord *data.LogRecord) (*data.LogRecordPos, er
 	}
 
 	// 写入数据编码
-	encRecord, size := data.EncodeLogRecord(logRecord)
+	encRecord, size := data.EncodeLogEntry(entry)
 	// 如果写入的数据已经到达了活跃文件的阈值，则关闭活跃文件，并打开新的文件
 	if db.activeFile.WriteOff+size > db.options.DataFileSize {
 		// 先持久化数据文件，保证已有的数据持久到磁盘当中
@@ -792,7 +801,7 @@ func (db *DB) loadIndexFromDataFiles() error {
 
 		var offset int64 = 0
 		for {
-			logRecord, size, err := dataFile.ReadLogRecord(offset)
+			entry, size, err := dataFile.ReadLogRecord(offset)
 			if err != nil {
 				if err == io.EOF {
 					break
@@ -804,27 +813,27 @@ func (db *DB) loadIndexFromDataFiles() error {
 			logRecordPos := &data.LogRecordPos{Fid: fileId, Offset: offset, Size: uint32(size)}
 
 			// 解析 key，拿到事务序列号
-			realKey, seqNo := parseLogRecordKey(logRecord.Key)
+			realKey, seqNo := parseLogRecordKey(entry.Record.Key)
 			if seqNo == nonTransactionSeqNo {
-				if logRecord.Type == data.LogRecordNormal || logRecord.Type == data.LogRecordDeleted {
-					logRecord.Key = realKey
-					db.applyCommittedRecord(realKey, logRecord.Type, logRecordPos)
+				if entry.Record.Type == data.LogRecordNormal || entry.Record.Type == data.LogRecordDeleted {
+					entry.Record.Key = realKey
+					db.applyCommittedRecord(realKey, entry.Record.Type, logRecordPos)
 				}
 			} else {
-				if logRecord.Type == data.LogRecordTxnFinished {
+				if entry.Record.Type == data.LogRecordTxnFinished {
 					db.diagf("loadIndex: apply committed txn seq=%d records=%d", seqNo, len(transactionRecords[seqNo]))
 					for _, txnRecord := range transactionRecords[seqNo] {
-						db.applyCommittedRecord(txnRecord.Record.Key, txnRecord.Record.Type, txnRecord.Pos)
+						db.applyCommittedRecord(txnRecord.Entry.Record.Key, txnRecord.Entry.Record.Type, txnRecord.Pos)
 					}
 					delete(transactionRecords, seqNo)
 					if seqNo > currentSeqNo {
 						currentSeqNo = seqNo
 					}
-				} else if logRecord.Type == data.LogRecordNormal || logRecord.Type == data.LogRecordDeleted {
-					logRecord.Key = realKey
+				} else if entry.Record.Type == data.LogRecordNormal || entry.Record.Type == data.LogRecordDeleted {
+					entry.Record.Key = realKey
 					transactionRecords[seqNo] = append(transactionRecords[seqNo], &data.TransactionRecord{
-						Record: logRecord,
-						Pos:    logRecordPos,
+						Entry: entry,
+						Pos:   logRecordPos,
 					})
 				}
 			}
@@ -875,7 +884,7 @@ func (db *DB) loadSeqNo() error {
 	if err != nil {
 		return err
 	}
-	seqNo, err := strconv.ParseUint(string(record.Value), 10, 64)
+	seqNo, err := strconv.ParseUint(string(record.Record.Value), 10, 64)
 	if err != nil {
 		return err
 	}

@@ -152,7 +152,7 @@ func (db *DB) MergeWithOptions(opts MergeOptions) error {
 	for _, dataFile := range mergeFiles {
 		var offset int64 = 0
 		for {
-			logRecord, size, err := dataFile.ReadLogRecord(offset)
+			entry, size, err := dataFile.ReadLogRecord(offset)
 			if err != nil {
 				if err == io.EOF {
 					break
@@ -160,9 +160,9 @@ func (db *DB) MergeWithOptions(opts MergeOptions) error {
 				return err
 			}
 
-			realKey, seqNo := parseLogRecordKey(logRecord.Key)
+			realKey, seqNo := parseLogRecordKey(entry.Record.Key)
 
-			if logRecord.Type == data.LogRecordTxnFinished {
+			if entry.Record.Type == data.LogRecordTxnFinished {
 				records := txnRecords[seqNo]
 				for _, rec := range records {
 					sel := versions[string(rec.key)]
@@ -177,16 +177,16 @@ func (db *DB) MergeWithOptions(opts MergeOptions) error {
 				continue
 			}
 
-			if logRecord.Type != data.LogRecordNormal && logRecord.Type != data.LogRecordDeleted {
+			if entry.Record.Type != data.LogRecordNormal && entry.Record.Type != data.LogRecordDeleted {
 				offset += size
 				continue
 			}
 
 			version := &mergeVersion{
 				key:      append([]byte(nil), realKey...),
-				value:    append([]byte(nil), logRecord.Value...),
-				typ:      logRecord.Type,
-				commitTs: logRecord.CommitTs,
+				value:    append([]byte(nil), entry.Record.Value...),
+				typ:      entry.Record.Type,
+				commitTs: entry.Meta.CommitTs,
 			}
 
 			if seqNo == nonTransactionSeqNo {
@@ -231,20 +231,24 @@ func (db *DB) MergeWithOptions(opts MergeOptions) error {
 
 		var prevPos *data.LogRecordPos
 		for _, version := range toWrite {
-			logRecord := &data.LogRecord{
-				Key:        logRecordKeyWithSeq(version.key, nonTransactionSeqNo),
-				Value:      version.value,
-				Type:       version.typ,
-				CommitTs:   version.commitTs,
-				PrevOffset: -1,
-				PrevFid:    0,
+			logEntry := &data.LogEntry{
+				Record: data.LogRecord{
+					Key:   logRecordKeyWithSeq(version.key, nonTransactionSeqNo),
+					Value: version.value,
+					Type:  version.typ,
+				},
+				Meta: data.LogMeta{
+					CommitTs:   version.commitTs,
+					PrevOffset: -1,
+					PrevFid:    0,
+				},
 			}
 			if prevPos != nil {
-				logRecord.PrevOffset = prevPos.Offset
-				logRecord.PrevFid = prevPos.Fid
+				logEntry.Meta.PrevOffset = prevPos.Offset
+				logEntry.Meta.PrevFid = prevPos.Fid
 			}
 
-			pos, err := mergeDB.appendLogRecord(logRecord)
+			pos, err := mergeDB.appendLogEntry(logEntry)
 			if err != nil {
 				return err
 			}
@@ -271,11 +275,14 @@ func (db *DB) MergeWithOptions(opts MergeOptions) error {
 	if err != nil {
 		return err
 	}
-	mergeFinRecord := &data.LogRecord{
-		Key:   []byte(mergeFinishedKey),
-		Value: []byte(strconv.Itoa(int(nonMergeFileId))),
+	mergeFinRecord := &data.LogEntry{
+		Record: data.LogRecord{
+			Key:   []byte(mergeFinishedKey),
+			Value: []byte(strconv.Itoa(int(nonMergeFileId))),
+			Type:  data.LogRecordNormal,
+		},
 	}
-	encRecord, _ := data.EncodeLogRecord(mergeFinRecord)
+	encRecord, _ := data.EncodeLogEntry(mergeFinRecord)
 	if err := mergeFinishedFile.Write(encRecord); err != nil {
 		return err
 	}
@@ -383,7 +390,7 @@ func (db *DB) getNonMergeFileId(dirPath string) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	nonMergeFileId, err := strconv.Atoi(string(record.Value))
+	nonMergeFileId, err := strconv.Atoi(string(record.Record.Value))
 	if err != nil {
 		return 0, err
 	}
@@ -407,7 +414,7 @@ func (db *DB) loadIndexFromHintFile() error {
 	// 读取文件中的索引
 	var offset int64 = 0
 	for {
-		logRecord, size, err := hintFile.ReadLogRecord(offset)
+		entry, size, err := hintFile.ReadLogRecord(offset)
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -416,8 +423,8 @@ func (db *DB) loadIndexFromHintFile() error {
 		}
 
 		// 解码拿到实际的位置索引
-		pos := data.DecodeLogRecordPos(logRecord.Value)
-		db.index.Put(logRecord.Key, pos)
+		pos := data.DecodeLogRecordPos(entry.Record.Value)
+		db.index.Put(entry.Record.Key, pos)
 		offset += size
 	}
 	return nil

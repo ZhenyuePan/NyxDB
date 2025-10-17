@@ -45,9 +45,6 @@ type ClusterOptions struct {
 	// 当前节点地址
 	NodeAddress string
 
-	// 使用的路由算法类型
-	RouterType RouterType
-
 	// 自动快照相关配置
 	AutoSnapshot           bool
 	SnapshotInterval       time.Duration
@@ -96,16 +93,8 @@ const (
 	// BTree 索引
 	Btree IndexerType = iota
 	SkipList
-)
-
-// RouterType 定义路由算法类型
-type RouterType = int8
-
-const (
-	// DirectHash 直接哈希路由
-	DirectHash RouterType = iota
-	// ConsistentHash 一致性哈希路由
-	ConsistentHash
+	AdaptiveRadix
+	ShardedBtree
 )
 
 var DefaultOptions = Options{
@@ -113,7 +102,7 @@ var DefaultOptions = Options{
 	DataFileSize:       256 * 1024 * 1024, // 256MB
 	SyncWrites:         false,
 	BytesPerSync:       0,
-	IndexType:          SkipList,
+	IndexType:          ShardedBtree,
 	MMapAtStartup:      true,
 	DataFileMergeRatio: 0.5,
 	ClusterConfig:      nil, // 默认不启用集群

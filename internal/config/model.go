@@ -89,7 +89,6 @@ func (c *ServerConfig) EngineOptions() db.Options {
 		opts.ClusterConfig = &db.ClusterOptions{
 			ClusterMode:              true,
 			NodeAddress:              nodeAddr,
-			RouterType:               db.DirectHash,
 			ClusterAddresses:         c.Cluster.ClusterAddresses,
 			AutoSnapshot:             c.Cluster.AutoSnapshot,
 			SnapshotInterval:         interval,

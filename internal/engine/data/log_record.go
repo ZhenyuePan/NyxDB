@@ -22,13 +22,26 @@ const (
 
 // LogRecord 写入到数据文件的记录
 // 之所以叫日志，是因为数据文件中的数据是追加写入的，类似日志的格式
+// LogRecord carries the user payload stored in the append-only log.
+// It only contains logical data (key/value/type) without any physical metadata.
 type LogRecord struct {
-	Key        []byte
-	Value      []byte
-	Type       LogRecordType
+	Key   []byte
+	Value []byte
+	Type  LogRecordType
+}
+
+// LogMeta contains the physical metadata persisted alongside a LogRecord.
+// It represents commit ordering and linkage to previous versions.
+type LogMeta struct {
 	CommitTs   uint64
 	PrevFid    uint32
 	PrevOffset int64
+}
+
+// LogEntry groups a LogRecord with its metadata for encode/decode purposes.
+type LogEntry struct {
+	Record LogRecord
+	Meta   LogMeta
 }
 
 // LogRecord 的头部信息
@@ -37,9 +50,7 @@ type logRecordHeader struct {
 	recordType LogRecordType // 标识 LogRecord 的类型
 	keySize    uint32        // key 的长度
 	valueSize  uint32        // value 的长度
-	commitTs   uint64        // 事务提交时间戳
-	prevFid    uint32        // 上一个版本所在文件
-	prevOffset int64         // 上一个版本在磁盘中的偏移
+	meta       LogMeta       // 元数据
 }
 
 // LogRecordPos 数据内存索引，主要是描述数据在磁盘上的位置
@@ -51,23 +62,37 @@ type LogRecordPos struct {
 
 // TransactionRecord 暂存的事务相关的数据
 type TransactionRecord struct {
-	Record *LogRecord
-	Pos    *LogRecordPos
+	Entry *LogEntry
+	Pos   *LogRecordPos
 }
 
-// EncodeLogRecord 对 LogRecord 进行编码，返回字节数组及长度
+// EncodeLogEntry 将日志条目编码为二进制格式，并返回字节数组及其总长度。
+// 编码布局如下：
 //
-//	+-------------+-------------+-------------+--------------+-------------+--------------+
-//	| crc 校验值  |  type 类型   |    key size |   value size |      key    |      value   |
-//	+-------------+-------------+-------------+--------------+-------------+--------------+
-//	    4字节          1字节        变长（最大5）   变长（最大5）     变长           变长
-func EncodeLogRecord(logRecord *LogRecord) ([]byte, int64) {
+// 当没有事务元信息 (hasMeta=0) 时：
+// ┌───────────┬───────────┬────────────────┬────────────────  ┬───────────┬───────────┐
+// │ CRC(4LE)  │ Type(1B)  │ KeySize(varint)│ ValueSize(varint)│  Key      │  Value    │
+// └───────────┴───────────┴────────────────┴────────────────  ┴───────────┴───────────┘
+// CRC 计算范围：从 Type 开始到 Value 末尾（不含 CRC 自身）
+//
+// 当包含事务元信息 (hasMeta=1) 时：
+// ┌───────────┬────────────┬────────────────┬────────────────  ┬────────────────  ┬──────────────── ┬────────────────   ┬───────────┬───────────┐
+// │ CRC(4LE)  │ Type(1B)*  │ KeySize(varint)│ ValueSize(varint)| CommitTs(uvarint)| PrevFid(uvarint)| PrevOffset(varint)|  Key      │  Value    │
+// └───────────┴────────────┴────────────────┴────────────────  ┴────────────────  ┴──────────────── ┴────────────────   ┴───────────┴───────────┘
+// * Type 的 bit7 用作 hasMeta 标志位（1<<7），其余位为 LogRecordType。
+//
+// CommitTs:   uint64 → Uvarint 编码
+// PrevFid:    uint32 → Uvarint 编码
+// PrevOffset: int64  → Varint 编码
+// KeySize/ValueSize: int64 → Varint 编码
+
+func EncodeLogEntry(entry *LogEntry) ([]byte, int64) {
 	// 初始化一个 header 部分的字节数组
 	header := make([]byte, maxLogRecordHeaderSize)
 
 	// 第五个字节存储 Type
-	typeByte := byte(logRecord.Type)
-	useMeta := logRecord.CommitTs != 0 || logRecord.PrevOffset != 0 || logRecord.PrevFid != 0 || logRecord.Type == LogRecordTxnFinished
+	typeByte := byte(entry.Record.Type)
+	useMeta := entry.Meta.CommitTs != 0 || entry.Meta.PrevOffset != 0 || entry.Meta.PrevFid != 0 || entry.Record.Type == LogRecordTxnFinished
 	if useMeta {
 		typeByte |= logRecordMetaFlag
 	}
@@ -75,28 +100,33 @@ func EncodeLogRecord(logRecord *LogRecord) ([]byte, int64) {
 	var index = 5
 	// 5 字节之后，存储的是 key 和 value 的长度信息
 	// 使用变长类型，节省空间
-	index += binary.PutVarint(header[index:], int64(len(logRecord.Key)))
-	index += binary.PutVarint(header[index:], int64(len(logRecord.Value)))
+	index += binary.PutVarint(header[index:], int64(len(entry.Record.Key)))
+	index += binary.PutVarint(header[index:], int64(len(entry.Record.Value)))
 	if useMeta {
-		index += binary.PutUvarint(header[index:], logRecord.CommitTs)
-		index += binary.PutUvarint(header[index:], uint64(logRecord.PrevFid))
-		index += binary.PutVarint(header[index:], logRecord.PrevOffset)
+		index += binary.PutUvarint(header[index:], entry.Meta.CommitTs)
+		index += binary.PutUvarint(header[index:], uint64(entry.Meta.PrevFid))
+		index += binary.PutVarint(header[index:], entry.Meta.PrevOffset)
 	}
 
-	var size = index + len(logRecord.Key) + len(logRecord.Value)
+	var size = index + len(entry.Record.Key) + len(entry.Record.Value)
 	encBytes := make([]byte, size)
 
 	// 将 header 部分的内容拷贝过来
 	copy(encBytes[:index], header[:index])
 	// 将 key 和 value 数据拷贝到字节数组中
-	copy(encBytes[index:], logRecord.Key)
-	copy(encBytes[index+len(logRecord.Key):], logRecord.Value)
+	copy(encBytes[index:], entry.Record.Key)
+	copy(encBytes[index+len(entry.Record.Key):], entry.Record.Value)
 
 	// 对整个 LogRecord 的数据进行 crc 校验
 	crc := crc32.ChecksumIEEE(encBytes[4:])
 	binary.LittleEndian.PutUint32(encBytes[:4], crc)
 
 	return encBytes, int64(size)
+}
+
+// Deprecated: retained for compatibility with older call sites. Prefer EncodeLogEntry.
+func EncodeLogRecord(entry *LogEntry) ([]byte, int64) {
+	return EncodeLogEntry(entry)
 }
 
 // EncodeLogRecordPos 对位置信息进行编码
@@ -150,35 +180,33 @@ func decodeLogRecordHeader(buf []byte) (*logRecordHeader, int64) {
 		if n <= 0 {
 			return nil, 0
 		}
-		header.commitTs = commitTs
+		header.meta.CommitTs = commitTs
 		index += n
 
 		prevFid, n := binary.Uvarint(buf[index:])
 		if n <= 0 {
 			return nil, 0
 		}
-		header.prevFid = uint32(prevFid)
+		header.meta.PrevFid = uint32(prevFid)
 		index += n
 
 		prevOffset, n := binary.Varint(buf[index:])
 		if n <= 0 {
 			return nil, 0
 		}
-		header.prevOffset = prevOffset
+		header.meta.PrevOffset = prevOffset
 		index += n
 	}
 
 	return header, int64(index)
 }
-
-func getLogRecordCRC(lr *LogRecord, header []byte) uint32 {
-	if lr == nil {
+func getLogEntryCRC(entry *LogEntry, header []byte) uint32 {
+	if entry == nil {
 		return 0
 	}
 
 	crc := crc32.ChecksumIEEE(header[:])
-	crc = crc32.Update(crc, crc32.IEEETable, lr.Key)
-	crc = crc32.Update(crc, crc32.IEEETable, lr.Value)
-
+	crc = crc32.Update(crc, crc32.IEEETable, entry.Record.Key)
+	crc = crc32.Update(crc, crc32.IEEETable, entry.Record.Value)
 	return crc
 }

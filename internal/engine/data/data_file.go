@@ -68,8 +68,8 @@ func newDataFile(fileName string, fileId uint32, ioType fio.FileIOType) (*DataFi
 	}, nil
 }
 
-// ReadLogRecord 根据 offset 从数据文件中读取 LogRecord
-func (df *DataFile) ReadLogRecord(offset int64) (*LogRecord, int64, error) {
+// ReadLogRecord 根据 offset 从数据文件中读取日志条目（包含数据与元信息）。
+func (df *DataFile) ReadLogRecord(offset int64) (*LogEntry, int64, error) {
 	fileSize, err := df.IoManager.Size()
 	if err != nil {
 		return nil, 0, err
@@ -100,11 +100,9 @@ func (df *DataFile) ReadLogRecord(offset int64) (*LogRecord, int64, error) {
 	keySize, valueSize := int64(header.keySize), int64(header.valueSize)
 	var recordSize = headerSize + keySize + valueSize
 
-	logRecord := &LogRecord{
-		Type:       header.recordType,
-		CommitTs:   header.commitTs,
-		PrevFid:    header.prevFid,
-		PrevOffset: header.prevOffset,
+	entry := &LogEntry{
+		Record: LogRecord{Type: header.recordType},
+		Meta:   header.meta,
 	}
 	// 开始读取用户实际存储的 key/value 数据
 	if keySize > 0 || valueSize > 0 {
@@ -113,16 +111,16 @@ func (df *DataFile) ReadLogRecord(offset int64) (*LogRecord, int64, error) {
 			return nil, 0, err
 		}
 		//	解出 key 和 value
-		logRecord.Key = kvBuf[:keySize]
-		logRecord.Value = kvBuf[keySize:]
+		entry.Record.Key = kvBuf[:keySize]
+		entry.Record.Value = kvBuf[keySize:]
 	}
 
 	// 校验数据的有效性
-	crc := getLogRecordCRC(logRecord, headerBuf[crc32.Size:headerSize])
+	crc := getLogEntryCRC(entry, headerBuf[crc32.Size:headerSize])
 	if crc != header.crc {
 		return nil, 0, ErrInvalidCRC
 	}
-	return logRecord, recordSize, nil
+	return entry, recordSize, nil
 }
 
 func (df *DataFile) Write(buf []byte) error {
@@ -136,11 +134,14 @@ func (df *DataFile) Write(buf []byte) error {
 
 // WriteHintRecord 写入索引信息到 hint 文件中
 func (df *DataFile) WriteHintRecord(key []byte, pos *LogRecordPos) error {
-	record := &LogRecord{
-		Key:   key,
-		Value: EncodeLogRecordPos(pos),
+	record := &LogEntry{
+		Record: LogRecord{
+			Key:   key,
+			Value: EncodeLogRecordPos(pos),
+			Type:  LogRecordNormal,
+		},
 	}
-	encRecord, _ := EncodeLogRecord(record)
+	encRecord, _ := EncodeLogEntry(record)
 	return df.Write(encRecord)
 }
 

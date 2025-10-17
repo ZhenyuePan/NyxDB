@@ -34,7 +34,11 @@ const (
 	// Btree 索引
 	Btree IndexType = iota
 	Skiplist
+	AdaptiveRadix
+	ShardedBtree
 )
+
+const defaultShardCount = 32
 
 // NewIndexer 根据类型初始化索引
 func NewIndexer(typ IndexType, dirPath string, sync bool) Indexer {
@@ -43,6 +47,10 @@ func NewIndexer(typ IndexType, dirPath string, sync bool) Indexer {
 		return NewBTree()
 	case Skiplist:
 		return NewSkipList()
+	case AdaptiveRadix:
+		return NewART()
+	case ShardedBtree:
+		return NewSharded(defaultShardCount, func() Indexer { return NewBTree() })
 	default:
 		panic("unsupported index type")
 	}

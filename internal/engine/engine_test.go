@@ -195,12 +195,16 @@ func TestDB_RecoverSkipUnfinishedTxn(t *testing.T) {
 
 	// 模拟写入但未完成的事务（没有 TxnFinished）
 	db.mu.Lock()
-	_, err = db.appendLogRecord(&data.LogRecord{
-		Key:        logRecordKeyWithSeq([]byte("uncommitted"), 1),
-		Value:      []byte("value"),
-		Type:       data.LogRecordNormal,
-		CommitTs:   1,
-		PrevOffset: -1,
+	_, err = db.appendLogEntry(&data.LogEntry{
+		Record: data.LogRecord{
+			Key:   logRecordKeyWithSeq([]byte("uncommitted"), 1),
+			Value: []byte("value"),
+			Type:  data.LogRecordNormal,
+		},
+		Meta: data.LogMeta{
+			CommitTs:   1,
+			PrevOffset: -1,
+		},
 	})
 	db.mu.Unlock()
 	assert.Nil(t, err)
@@ -323,16 +327,16 @@ func collectCommitTsForKey(t *testing.T, dir string, fileIds []int, key []byte) 
 		assert.Nil(t, err)
 		var offset int64 = 0
 		for {
-			record, size, err := dataFile.ReadLogRecord(offset)
+			entry, size, err := dataFile.ReadLogRecord(offset)
 			if err != nil {
 				if err == io.EOF {
 					break
 				}
 				assert.Nil(t, err)
 			}
-			realKey, _ := parseLogRecordKey(record.Key)
+			realKey, _ := parseLogRecordKey(entry.Record.Key)
 			if bytes.Equal(realKey, key) {
-				result = append(result, record.CommitTs)
+				result = append(result, entry.Meta.CommitTs)
 			}
 			offset += size
 		}
