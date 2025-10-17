@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	raftnode "nyxdb/internal/node"
+	raftstorage "nyxdb/internal/raftstorage"
 	regionpkg "nyxdb/internal/region"
 )
 
@@ -11,7 +12,7 @@ import (
 type RegionReplica struct {
 	Region  *regionpkg.Region
 	Node    *raftnode.Node
-	Storage *RaftStorage
+	Storage *raftstorage.Storage
 }
 
 func (c *Cluster) registerReplica(rep *RegionReplica) {
@@ -34,7 +35,7 @@ func (c *Cluster) createRegionReplica(id regionpkg.ID, region *regionpkg.Region)
 	if region == nil {
 		return nil, fmt.Errorf("region metadata missing for id %d", id)
 	}
-	storage, err := NewRaftStorage(regionRaftDir(c.options.DirPath, id))
+	storage, err := raftstorage.New(regionRaftDir(c.options.DirPath, id))
 	if err != nil {
 		return nil, err
 	}

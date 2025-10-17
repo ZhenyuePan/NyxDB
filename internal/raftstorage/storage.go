@@ -1,4 +1,4 @@
-package cluster
+package raftstorage
 
 import (
 	"encoding/binary"
@@ -13,11 +13,11 @@ import (
 	"go.etcd.io/etcd/raft/v3/raftpb"
 )
 
-// RaftStorage implements raft.Storage with simple file-backed persistence.
-type RaftStorage struct {
+// Storage implements raft.Storage with simple file-backed persistence.
+type Storage struct {
 	mu          sync.RWMutex
 	path        string
-	entryOffset uint64 // index of the first entry in entries slice
+	entryOffset uint64
 
 	hardState raftpb.HardState
 	confState raftpb.ConfState
@@ -25,21 +25,20 @@ type RaftStorage struct {
 	entries   []raftpb.Entry
 }
 
-// Close releases resources held by the storage. Currently no-op but provides
-// a hook for future extensions.
-func (s *RaftStorage) Close() error {
+// Close releases resources held by the storage. Currently no-op.
+func (s *Storage) Close() error {
 	return nil
 }
 
-// NewRaftStorage constructs a storage rooted at dir. The directory will be created if needed.
-func NewRaftStorage(dir string) (*RaftStorage, error) {
+// New constructs a storage rooted at dir. The directory will be created if needed.
+func New(dir string) (*Storage, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("raft storage dir is empty")
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	st := &RaftStorage{
+	st := &Storage{
 		path:        filepath.Join(dir, "raft_state.bin"),
 		entryOffset: 1,
 	}
@@ -49,15 +48,13 @@ func NewRaftStorage(dir string) (*RaftStorage, error) {
 	return st, nil
 }
 
-// InitialState returns the saved HardState and ConfState.
-func (s *RaftStorage) InitialState() (raftpb.HardState, raftpb.ConfState, error) {
+func (s *Storage) InitialState() (raftpb.HardState, raftpb.ConfState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.hardState, s.confState, nil
 }
 
-// SetHardState persists the HardState.
-func (s *RaftStorage) SetHardState(hs raftpb.HardState) error {
+func (s *Storage) SetHardState(hs raftpb.HardState) error {
 	s.mu.Lock()
 	s.hardState = hs
 	err := s.persistLocked()
@@ -65,8 +62,7 @@ func (s *RaftStorage) SetHardState(hs raftpb.HardState) error {
 	return err
 }
 
-// Entries returns a slice of log entries in [lo, hi).
-func (s *RaftStorage) Entries(lo, hi, maxSize uint64) ([]raftpb.Entry, error) {
+func (s *Storage) Entries(lo, hi, maxSize uint64) ([]raftpb.Entry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -95,8 +91,7 @@ func (s *RaftStorage) Entries(lo, hi, maxSize uint64) ([]raftpb.Entry, error) {
 	return ents, nil
 }
 
-// Term returns the term of entry i.
-func (s *RaftStorage) Term(i uint64) (uint64, error) {
+func (s *Storage) Term(i uint64) (uint64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -123,51 +118,25 @@ func (s *RaftStorage) Term(i uint64) (uint64, error) {
 	return s.entries[idx].Term, nil
 }
 
-func (s *RaftStorage) termAtLocked(i uint64) (uint64, error) {
-	if snapIndex := s.snapshot.Metadata.Index; i == snapIndex {
-		return s.snapshot.Metadata.Term, nil
-	} else if i < snapIndex {
-		return 0, raft.ErrCompacted
-	}
-	if len(s.entries) == 0 {
-		if i == s.snapshot.Metadata.Index {
-			return s.snapshot.Metadata.Term, nil
-		}
-		return 0, raft.ErrUnavailable
-	}
-	if i < s.entryOffset {
-		return 0, raft.ErrCompacted
-	}
-	idx := i - s.entryOffset
-	if idx >= uint64(len(s.entries)) {
-		return 0, raft.ErrUnavailable
-	}
-	return s.entries[idx].Term, nil
-}
-
-// LastIndex returns index of the last entry.
-func (s *RaftStorage) LastIndex() (uint64, error) {
+func (s *Storage) LastIndex() (uint64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.lastIndexLocked(), nil
 }
 
-// FirstIndex returns the index of the first log entry that is possible to retrieve.
-func (s *RaftStorage) FirstIndex() (uint64, error) {
+func (s *Storage) FirstIndex() (uint64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.firstIndexLocked(), nil
 }
 
-// Snapshot returns the current snapshot.
-func (s *RaftStorage) Snapshot() (raftpb.Snapshot, error) {
+func (s *Storage) Snapshot() (raftpb.Snapshot, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return cloneSnapshot(s.snapshot), nil
 }
 
-// ApplySnapshot applies a new snapshot and discards older entries.
-func (s *RaftStorage) ApplySnapshot(snap raftpb.Snapshot) error {
+func (s *Storage) ApplySnapshot(snap raftpb.Snapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -194,8 +163,7 @@ func (s *RaftStorage) ApplySnapshot(snap raftpb.Snapshot) error {
 	return s.persistLocked()
 }
 
-// CreateSnapshot stores a new snapshot at the given index with the provided payload.
-func (s *RaftStorage) CreateSnapshot(index uint64, data []byte, cs *raftpb.ConfState) (*raftpb.Snapshot, error) {
+func (s *Storage) CreateSnapshot(index uint64, data []byte, cs *raftpb.ConfState) (*raftpb.Snapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -229,8 +197,7 @@ func (s *RaftStorage) CreateSnapshot(index uint64, data []byte, cs *raftpb.ConfS
 	return &snap, nil
 }
 
-// Compact removes entries up to the provided index (inclusive).
-func (s *RaftStorage) Compact(index uint64) error {
+func (s *Storage) Compact(index uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -252,8 +219,7 @@ func (s *RaftStorage) Compact(index uint64) error {
 	return s.persistLocked()
 }
 
-// SetConfState stores the provided conf state.
-func (s *RaftStorage) SetConfState(cs *raftpb.ConfState) error {
+func (s *Storage) SetConfState(cs *raftpb.ConfState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if cs == nil {
@@ -264,15 +230,13 @@ func (s *RaftStorage) SetConfState(cs *raftpb.ConfState) error {
 	return s.persistLocked()
 }
 
-// ConfState returns the current configuration state.
-func (s *RaftStorage) ConfState() raftpb.ConfState {
+func (s *Storage) ConfState() raftpb.ConfState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return *proto.Clone(&s.confState).(*raftpb.ConfState)
 }
 
-// Append appends new entries to storage.
-func (s *RaftStorage) Append(ents []raftpb.Entry) error {
+func (s *Storage) Append(ents []raftpb.Entry) error {
 	if len(ents) == 0 {
 		return nil
 	}
@@ -284,7 +248,6 @@ func (s *RaftStorage) Append(ents []raftpb.Entry) error {
 	lastNew := ents[len(ents)-1].Index
 
 	if lastNew < firstIndex {
-		// All entries are already compacted.
 		return nil
 	}
 	if ents[0].Index < firstIndex {
@@ -309,7 +272,29 @@ func (s *RaftStorage) Append(ents []raftpb.Entry) error {
 	return s.persistLocked()
 }
 
-func (s *RaftStorage) firstIndexLocked() uint64 {
+func (s *Storage) termAtLocked(i uint64) (uint64, error) {
+	if snapIndex := s.snapshot.Metadata.Index; i == snapIndex {
+		return s.snapshot.Metadata.Term, nil
+	} else if i < snapIndex {
+		return 0, raft.ErrCompacted
+	}
+	if len(s.entries) == 0 {
+		if i == s.snapshot.Metadata.Index {
+			return s.snapshot.Metadata.Term, nil
+		}
+		return 0, raft.ErrUnavailable
+	}
+	if i < s.entryOffset {
+		return 0, raft.ErrCompacted
+	}
+	idx := i - s.entryOffset
+	if idx >= uint64(len(s.entries)) {
+		return 0, raft.ErrUnavailable
+	}
+	return s.entries[idx].Term, nil
+}
+
+func (s *Storage) firstIndexLocked() uint64 {
 	if s.snapshot.Metadata.Index != 0 {
 		return s.snapshot.Metadata.Index + 1
 	}
@@ -319,14 +304,14 @@ func (s *RaftStorage) firstIndexLocked() uint64 {
 	return 1
 }
 
-func (s *RaftStorage) lastIndexLocked() uint64 {
+func (s *Storage) lastIndexLocked() uint64 {
 	if len(s.entries) > 0 {
 		return s.entries[len(s.entries)-1].Index
 	}
 	return s.snapshot.Metadata.Index
 }
 
-func (s *RaftStorage) persistLocked() error {
+func (s *Storage) persistLocked() error {
 	tmpPath := s.path + ".tmp"
 	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -363,7 +348,7 @@ func (s *RaftStorage) persistLocked() error {
 	return nil
 }
 
-func (s *RaftStorage) load() error {
+func (s *Storage) load() error {
 	f, err := os.Open(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {

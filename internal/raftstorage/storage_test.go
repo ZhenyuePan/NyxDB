@@ -1,4 +1,4 @@
-package cluster
+package raftstorage_test
 
 import (
 	"os"
@@ -8,11 +8,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
+	raftstorage "nyxdb/internal/raftstorage"
 )
 
-func TestRaftStorageAppendAndPersist(t *testing.T) {
+func TestStorageAppendAndPersist(t *testing.T) {
 	dir := t.TempDir()
-	st, err := NewRaftStorage(dir)
+	st, err := raftstorage.New(dir)
 	require.NoError(t, err)
 
 	first, err := st.FirstIndex()
@@ -41,8 +42,7 @@ func TestRaftStorageAppendAndPersist(t *testing.T) {
 
 	require.NoError(t, st.SetHardState(raftpb.HardState{Term: 2, Commit: 3}))
 
-	// reopen to ensure persistence
-	st2, err := NewRaftStorage(dir)
+	st2, err := raftstorage.New(dir)
 	require.NoError(t, err)
 
 	hs, _, err := st2.InitialState()
@@ -56,9 +56,9 @@ func TestRaftStorageAppendAndPersist(t *testing.T) {
 	require.Equal(t, []byte("e2"), got2[0].Data)
 }
 
-func TestRaftStorageSnapshotAndCompaction(t *testing.T) {
+func TestStorageSnapshotAndCompaction(t *testing.T) {
 	dir := t.TempDir()
-	st, err := NewRaftStorage(dir)
+	st, err := raftstorage.New(dir)
 	require.NoError(t, err)
 
 	require.NoError(t, st.Append([]raftpb.Entry{
@@ -68,10 +68,7 @@ func TestRaftStorageSnapshotAndCompaction(t *testing.T) {
 	}))
 
 	snap := raftpb.Snapshot{
-		Metadata: raftpb.SnapshotMetadata{
-			Index: 6,
-			Term:  3,
-		},
+		Metadata: raftpb.SnapshotMetadata{Index: 6, Term: 3},
 	}
 	require.NoError(t, st.ApplySnapshot(snap))
 
@@ -82,7 +79,6 @@ func TestRaftStorageSnapshotAndCompaction(t *testing.T) {
 	_, err = st.Term(5)
 	require.ErrorIs(t, err, raft.ErrCompacted)
 
-	// Append entries after snapshot.
 	require.NoError(t, st.Append([]raftpb.Entry{
 		{Index: 7, Term: 4, Data: []byte("v7")},
 		{Index: 8, Term: 4, Data: []byte("v8")},
@@ -93,8 +89,7 @@ func TestRaftStorageSnapshotAndCompaction(t *testing.T) {
 	require.Len(t, entries, 2)
 	require.Equal(t, []byte("v7"), entries[0].Data)
 
-	// ensure persisted snapshot / entries
-	st2, err := NewRaftStorage(dir)
+	st2, err := raftstorage.New(dir)
 	require.NoError(t, err)
 
 	first2, err := st2.FirstIndex()
@@ -102,9 +97,9 @@ func TestRaftStorageSnapshotAndCompaction(t *testing.T) {
 	require.Equal(t, uint64(7), first2)
 }
 
-func TestRaftStorageFilesCreated(t *testing.T) {
+func TestStorageFilesCreated(t *testing.T) {
 	dir := t.TempDir()
-	st, err := NewRaftStorage(dir)
+	st, err := raftstorage.New(dir)
 	require.NoError(t, err)
 	require.NoError(t, st.SetHardState(raftpb.HardState{Term: 1}))
 

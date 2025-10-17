@@ -13,7 +13,9 @@ import (
 
 	db "nyxdb/internal/engine"
 	raftnode "nyxdb/internal/node"
+	pd "nyxdb/internal/pd"
 	rafttransport "nyxdb/internal/raft"
+	raftstorage "nyxdb/internal/raftstorage"
 	regionpkg "nyxdb/internal/region"
 	replication "nyxdb/internal/replication"
 	utils "nyxdb/internal/utils"
@@ -33,12 +35,13 @@ const (
 
 // Cluster 代表一个分布式存储集群
 type Cluster struct {
-	nodeID    uint64
-	options   db.Options
-	db        *db.DB
-	raftNode  *raftnode.Node
-	transport rafttransport.Transport
-	storage   *RaftStorage
+	nodeID       uint64
+	options      db.Options
+	db           *db.DB
+	raftNode     *raftnode.Node
+	transport    rafttransport.Transport
+	storage      *raftstorage.Storage
+	storeAddress string
 
 	// 集群成员管理
 	members     map[uint64]string // nodeID -> address
@@ -90,12 +93,15 @@ type Cluster struct {
 	diagnosticsMu        sync.RWMutex
 	diagnosticsObservers []func(Diagnostics)
 
-	regionMu       sync.RWMutex
-	regions        map[regionpkg.ID]*regionpkg.Region
-	regionReplicas map[regionpkg.ID]*RegionReplica
-	nextRegionID   regionpkg.ID
-	lifecycleMu    sync.RWMutex
-	started        bool
+	regionMu            sync.RWMutex
+	regions             map[regionpkg.ID]*regionpkg.Region
+	regionReplicas      map[regionpkg.ID]*RegionReplica
+	nextRegionID        regionpkg.ID
+	lifecycleMu         sync.RWMutex
+	started             bool
+	pdClient            pd.Heartbeater
+	pdHeartbeatInterval time.Duration
+	pdHeartbeatStarted  bool
 }
 
 type peerAddress struct {
@@ -172,10 +178,12 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		diagnosticsInterval: defaultDiagnosticsInterval,
 		regions:             make(map[regionpkg.ID]*regionpkg.Region),
 		regionReplicas:      make(map[regionpkg.ID]*RegionReplica),
+		pdHeartbeatInterval: 2 * time.Second,
 	}
 
 	if options.ClusterConfig != nil {
 		cc := options.ClusterConfig
+		cluster.storeAddress = cc.NodeAddress
 		cluster.snapshotEnabled = cc.AutoSnapshot
 		if cc.SnapshotInterval > 0 {
 			cluster.snapshotInterval = cc.SnapshotInterval
@@ -294,6 +302,19 @@ func (c *Cluster) Start() error {
 		go c.runDiagnostics()
 	}
 
+	if c.pdClient != nil {
+		c.lifecycleMu.Lock()
+		already := c.pdHeartbeatStarted
+		if !already {
+			c.pdHeartbeatStarted = true
+		}
+		c.lifecycleMu.Unlock()
+		if !already {
+			c.wg.Add(1)
+			go c.runPDHeartbeats()
+		}
+	}
+
 	c.setStarted(true)
 	return nil
 }
@@ -301,6 +322,9 @@ func (c *Cluster) Start() error {
 // Stop 停止集群
 func (c *Cluster) Stop() error {
 	c.setStarted(false)
+	c.lifecycleMu.Lock()
+	c.pdHeartbeatStarted = false
+	c.lifecycleMu.Unlock()
 	c.cancel()
 	c.wg.Wait()
 
