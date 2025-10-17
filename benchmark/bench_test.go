@@ -66,7 +66,7 @@ func Benchmark_Delete(b *testing.B) {
 }
 
 func Benchmark_ReadTxnSnapshot(b *testing.B) {
-	key := []byte("benchmark-readtxn")
+    key := []byte("benchmark-readtxn")
 	currentVal := []byte("init-value")
 	assert.Nil(b, dbInstance.Put(key, currentVal))
 
