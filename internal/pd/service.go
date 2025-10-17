@@ -8,11 +8,70 @@ import (
 	db "nyxdb/internal/engine"
 )
 
+type heartbeatStore interface {
+	Put(StoreHeartbeat) error
+	ForEach(func(StoreHeartbeat) error) error
+	Close() error
+}
+
+type bitcaskHeartbeatStore struct {
+	db *db.DB
+}
+
+func newBitcaskHeartbeatStore(dir string) (*bitcaskHeartbeatStore, error) {
+	opts := db.DefaultOptions
+	opts.DirPath = dir
+	opts.EnableDiagnostics = false
+	opts.SyncWrites = true
+	opts.ClusterConfig = nil
+
+	database, err := db.Open(opts)
+	if err != nil {
+		return nil, err
+	}
+	return &bitcaskHeartbeatStore{db: database}, nil
+}
+
+func (b *bitcaskHeartbeatStore) Put(hb StoreHeartbeat) error {
+	data, err := json.Marshal(hb)
+	if err != nil {
+		return err
+	}
+	key := []byte(fmt.Sprintf("%s%d", storeKeyPrefix, hb.StoreID))
+	return b.db.Put(key, data)
+}
+
+func (b *bitcaskHeartbeatStore) ForEach(fn func(StoreHeartbeat) error) error {
+	iterOpts := db.DefaultIteratorOptions
+	iterOpts.Prefix = []byte(storeKeyPrefix)
+	iter := b.db.NewIterator(iterOpts)
+	defer iter.Close()
+
+	for iter.Rewind(); iter.Valid(); iter.Next() {
+		value, err := iter.Value()
+		if err != nil {
+			return err
+		}
+		var hb StoreHeartbeat
+		if err := json.Unmarshal(value, &hb); err != nil {
+			return fmt.Errorf("decode heartbeat %s: %w", iter.Key(), err)
+		}
+		if err := fn(hb); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *bitcaskHeartbeatStore) Close() error {
+	return b.db.Close()
+}
+
 // Service stores PD metadata, optionally persisting to NyxDB.
 type Service struct {
 	mu     sync.RWMutex
 	stores map[uint64]StoreHeartbeat
-	db     *db.DB
+	store  heartbeatStore
 }
 
 // NewService creates a pure in-memory PD service.
@@ -22,20 +81,14 @@ func NewService() *Service {
 
 // NewPersistentService persists heartbeats under dir so PD metadata survives restarts.
 func NewPersistentService(dir string) (*Service, error) {
-	opts := db.DefaultOptions
-	opts.DirPath = dir
-	opts.EnableDiagnostics = false
-	opts.SyncWrites = true
-	opts.ClusterConfig = nil
-
-	database, err := db.Open(opts)
+	store, err := newBitcaskHeartbeatStore(dir)
 	if err != nil {
 		return nil, fmt.Errorf("open pd storage: %w", err)
 	}
 
-	svc := &Service{stores: make(map[uint64]StoreHeartbeat), db: database}
-	if err := svc.loadFromDB(); err != nil {
-		_ = database.Close()
+	svc := &Service{stores: make(map[uint64]StoreHeartbeat), store: store}
+	if err := svc.loadFromStore(); err != nil {
+		_ = store.Close()
 		return nil, err
 	}
 	return svc, nil
@@ -47,8 +100,8 @@ func (s *Service) HandleHeartbeat(hb StoreHeartbeat) StoreHeartbeatResponse {
 	s.stores[hb.StoreID] = hb
 	s.mu.Unlock()
 
-	if s.db != nil {
-		if err := s.persistStore(hb); err != nil {
+	if s.store != nil {
+		if err := s.store.Put(hb); err != nil {
 			fmt.Printf("pd: persist heartbeat error: %v\n", err)
 		}
 	}
@@ -76,45 +129,20 @@ func (s *Service) Stores() []StoreHeartbeat {
 
 // Close releases persistent resources if present.
 func (s *Service) Close() error {
-	if s.db != nil {
-		return s.db.Close()
+	if s.store != nil {
+		return s.store.Close()
 	}
 	return nil
 }
 
 const storeKeyPrefix = "store/"
 
-func (s *Service) loadFromDB() error {
-	if s.db == nil {
+func (s *Service) loadFromStore() error {
+	if s.store == nil {
 		return nil
 	}
-	iterOpts := db.DefaultIteratorOptions
-	iterOpts.Prefix = []byte(storeKeyPrefix)
-	iter := s.db.NewIterator(iterOpts)
-	defer iter.Close()
-
-	for iter.Rewind(); iter.Valid(); iter.Next() {
-		value, err := iter.Value()
-		if err != nil {
-			return err
-		}
-		var hb StoreHeartbeat
-		if err := json.Unmarshal(value, &hb); err != nil {
-			return fmt.Errorf("decode heartbeat %s: %w", iter.Key(), err)
-		}
+	return s.store.ForEach(func(hb StoreHeartbeat) error {
 		s.stores[hb.StoreID] = hb
-	}
-	return nil
-}
-
-func (s *Service) persistStore(hb StoreHeartbeat) error {
-	if s.db == nil {
 		return nil
-	}
-	data, err := json.Marshal(hb)
-	if err != nil {
-		return err
-	}
-	key := []byte(fmt.Sprintf("%s%d", storeKeyPrefix, hb.StoreID))
-	return s.db.Put(key, data)
+	})
 }
