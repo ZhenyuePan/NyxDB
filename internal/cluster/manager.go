@@ -14,6 +14,7 @@ import (
 	db "nyxdb/internal/engine"
 	raftnode "nyxdb/internal/node"
 	rafttransport "nyxdb/internal/raft"
+	regionpkg "nyxdb/internal/region"
 	replication "nyxdb/internal/replication"
 	utils "nyxdb/internal/utils"
 	api "nyxdb/pkg/api"
@@ -88,6 +89,9 @@ type Cluster struct {
 	diagnosticsInterval  time.Duration
 	diagnosticsMu        sync.RWMutex
 	diagnosticsObservers []func(Diagnostics)
+
+	regionMu sync.RWMutex
+	regions  map[regionpkg.ID]*regionpkg.Region
 }
 
 type peerAddress struct {
@@ -162,6 +166,7 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		readTxnTTL:          time.Minute,
 		diagnosticsEnabled:  options.EnableDiagnostics,
 		diagnosticsInterval: defaultDiagnosticsInterval,
+		regions:             make(map[regionpkg.ID]*regionpkg.Region),
 	}
 
 	if options.ClusterConfig != nil {
@@ -221,6 +226,7 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 	}
 
 	cluster.applier = replication.NewApplier(database)
+	cluster.initDefaultRegions()
 
 	memberDir := filepath.Join(options.DirPath, "cluster")
 	store, err := newMemberStore(memberDir)
@@ -820,33 +826,33 @@ var (
 
 // Diagnostics captures a point-in-time view of cluster metrics for observability.
 type Diagnostics struct {
-	LeaderID             uint64
-	Term                 uint64
-	AppliedIndex         uint64
-	CommittedIndex       uint64
-	LastRaftIndex        uint64
-	LastSnapshotIndex    uint64
-	EntriesSinceSnapshot uint64
-	SnapshotInProgress   bool
-	SnapshotStartTime    time.Time
-	LastSnapshotTime     time.Time
-	ReadTxnCount         int
-	MemberCount          int
-	LastSnapshotDuration time.Duration
+	LeaderID              uint64
+	Term                  uint64
+	AppliedIndex          uint64
+	CommittedIndex        uint64
+	LastRaftIndex         uint64
+	LastSnapshotIndex     uint64
+	EntriesSinceSnapshot  uint64
+	SnapshotInProgress    bool
+	SnapshotStartTime     time.Time
+	LastSnapshotTime      time.Time
+	ReadTxnCount          int
+	MemberCount           int
+	LastSnapshotDuration  time.Duration
 	LastSnapshotSizeBytes uint64
 }
 
 // SnapshotStatus describes current snapshotting state and recent metrics.
 type SnapshotStatus struct {
-	InProgress        bool
-	LastSnapshotIndex uint64
-	EntriesSince      uint64
-	LastSnapshotTime  time.Time
-	InProgressSince   time.Time
-	AppliedIndex      uint64
-	LastRaftIndex     uint64
-	Leader            string
-	LastSnapshotDuration time.Duration
+	InProgress            bool
+	LastSnapshotIndex     uint64
+	EntriesSince          uint64
+	LastSnapshotTime      time.Time
+	InProgressSince       time.Time
+	AppliedIndex          uint64
+	LastRaftIndex         uint64
+	Leader                string
+	LastSnapshotDuration  time.Duration
 	LastSnapshotSizeBytes uint64
 }
 
@@ -873,9 +879,9 @@ func (c *Cluster) SnapshotStatus() SnapshotStatus {
 // Diagnostics returns the latest cluster metrics useful for observability.
 func (c *Cluster) Diagnostics() Diagnostics {
 	diag := Diagnostics{
-		LastSnapshotIndex: c.lastSnapshotIndex,
-		LastSnapshotTime:  c.lastSnapshotTime,
-		LastSnapshotDuration: c.lastSnapshotDuration,
+		LastSnapshotIndex:     c.lastSnapshotIndex,
+		LastSnapshotTime:      c.lastSnapshotTime,
+		LastSnapshotDuration:  c.lastSnapshotDuration,
 		LastSnapshotSizeBytes: c.lastSnapshotSizeBytes,
 	}
 	if c.raftNode != nil {
