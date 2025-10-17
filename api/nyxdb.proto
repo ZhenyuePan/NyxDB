@@ -106,11 +106,31 @@ enum RegionRole {
   REGION_ROLE_LEARNER = 2;
 }
 
+enum RegionState {
+  REGION_STATE_UNSPECIFIED = 0;
+  REGION_STATE_ACTIVE = 1;
+  REGION_STATE_SPLITTING = 2;
+  REGION_STATE_MERGING = 3;
+  REGION_STATE_TOMBSTONE = 4;
+}
+
+message RegionDescriptor {
+  uint64 region_id = 1;
+  bytes start_key = 2;
+  bytes end_key = 3;
+  uint64 version = 4;
+  uint64 conf_version = 5;
+  RegionState state = 6;
+  uint64 leader_peer_id = 7;
+}
+
 message RegionReplicaDescriptor {
   uint64 region_id = 1;
   uint64 store_id = 2;
   RegionRole role = 3;
   uint64 applied_index = 4;
+  RegionDescriptor region = 5;
+  uint64 peer_id = 6;
 }
 
 message StoreHeartbeatProto {
@@ -125,6 +145,21 @@ message StoreHeartbeatRequest {
 }
 
 message StoreHeartbeatResponse {}
+
+message ListStoresRequest {}
+
+message ListStoresResponse {
+  repeated StoreHeartbeatProto stores = 1;
+}
+
+message GetRegionByKeyRequest {
+  bytes key = 1;
+}
+
+message GetRegionByKeyResponse {
+  RegionDescriptor region = 1;
+  repeated RegionReplicaDescriptor replicas = 2;
+}
 
 message SnapshotPayload {
   bytes backup = 1;
@@ -162,4 +197,6 @@ service Admin {
 
 service PD {
   rpc StoreHeartbeat(StoreHeartbeatRequest) returns (StoreHeartbeatResponse);
+  rpc ListStores(ListStoresRequest) returns (ListStoresResponse);
+  rpc GetRegionByKey(GetRegionByKeyRequest) returns (GetRegionByKeyResponse);
 }
