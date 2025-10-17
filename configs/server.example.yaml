@@ -17,6 +17,10 @@ cluster:
   snapshotDirSizeThreshold: 0
   # Max duration considered healthy for a single snapshot operation.
   snapshotMaxDuration: 2m
+  # Minimum time between snapshot creation attempts.
+  snapshotMinInterval: 2m
+  # Maximum allowed applied lag (entries) before snapshot is blocked (0 -> 2x catchup entries).
+  snapshotMaxAppliedLag: 0
 grpc:
   address: 127.0.0.1:10001
 observability:

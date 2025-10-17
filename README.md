@@ -143,8 +143,17 @@ Observability features:
 
 - gRPC health: standard `grpc.health.v1.Health` service is exposed on the main gRPC port for liveness/readiness probes.
 - Prometheus metrics: set `observability.metricsAddress` in the server config (example: `127.0.0.1:2112`) to expose `/metrics` with gauges for Raft term/indices, member counts, snapshot progress, and read-transactions.
+- Snapshot metrics: each snapshot export records duration and payload size, published via `/metrics` (`cluster_last_snapshot_duration_seconds`, `cluster_last_snapshot_size_bytes`) and `admin snapshot-status`.
 
 The longer-term roadmap still includes richer metrics (engine IO, pprof) and SQL-layer observability.
+
+### Snapshot tuning knobs
+
+`cluster` config exposes several guardrails to control snapshot cadence:
+
+- `snapshotMinInterval`: minimum wall-clock gap between successive snapshots.
+- `snapshotMaxAppliedLag`: maximum allowed `lastIndex - appliedIndex` gap before snapshots are blocked (defaults to `2 * snapshotCatchUpEntries`).
+- `snapshotDirSizeThreshold`, `snapshotThreshold`, and `snapshotCatchUpEntries` continue to bound log growth and retention.
 
 ---
 

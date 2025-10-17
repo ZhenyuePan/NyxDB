@@ -16,16 +16,18 @@ import (
 
 // ClusterCollector exposes cluster diagnostics as Prometheus metrics.
 type ClusterCollector struct {
-	term                prometheus.Gauge
-	commitIndex         prometheus.Gauge
-	appliedIndex        prometheus.Gauge
-	lastRaftIndex       prometheus.Gauge
-	entriesSinceSnap    prometheus.Gauge
-	memberCount         prometheus.Gauge
-	readTxnCount        prometheus.Gauge
-	snapshotInProgress  prometheus.Gauge
-	lastSnapshotUnix    prometheus.Gauge
-	lastSnapshotAgeSecs prometheus.Gauge
+	term                     prometheus.Gauge
+	commitIndex              prometheus.Gauge
+	appliedIndex             prometheus.Gauge
+	lastRaftIndex            prometheus.Gauge
+	entriesSinceSnap         prometheus.Gauge
+	memberCount              prometheus.Gauge
+	readTxnCount             prometheus.Gauge
+	snapshotInProgress       prometheus.Gauge
+	lastSnapshotUnix         prometheus.Gauge
+	lastSnapshotAgeSecs      prometheus.Gauge
+	lastSnapshotDurationSecs prometheus.Gauge
+	lastSnapshotSizeBytes    prometheus.Gauge
 }
 
 // NewClusterCollector creates a collector registered on the provided registry (default if nil).
@@ -88,6 +90,16 @@ func NewClusterCollector(reg prometheus.Registerer, namespace string) *ClusterCo
 			Name:      "cluster_last_snapshot_age_seconds",
 			Help:      "Age of the last snapshot in seconds.",
 		}),
+		lastSnapshotDurationSecs: builder.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "cluster_last_snapshot_duration_seconds",
+			Help:      "Duration of the last snapshot in seconds.",
+		}),
+		lastSnapshotSizeBytes: builder.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "cluster_last_snapshot_size_bytes",
+			Help:      "Size in bytes of the last snapshot payload.",
+		}),
 	}
 }
 
@@ -108,6 +120,8 @@ func (c *ClusterCollector) Observe(diag cluster.Diagnostics) {
 	if diag.LastSnapshotTime.IsZero() {
 		c.lastSnapshotUnix.Set(0)
 		c.lastSnapshotAgeSecs.Set(0)
+		c.lastSnapshotDurationSecs.Set(0)
+		c.lastSnapshotSizeBytes.Set(0)
 	} else {
 		c.lastSnapshotUnix.Set(float64(diag.LastSnapshotTime.Unix()))
 		age := time.Since(diag.LastSnapshotTime).Seconds()
@@ -116,6 +130,12 @@ func (c *ClusterCollector) Observe(diag cluster.Diagnostics) {
 		}
 		c.lastSnapshotAgeSecs.Set(age)
 	}
+	if diag.LastSnapshotDuration <= 0 {
+		c.lastSnapshotDurationSecs.Set(0)
+	} else {
+		c.lastSnapshotDurationSecs.Set(diag.LastSnapshotDuration.Seconds())
+	}
+	c.lastSnapshotSizeBytes.Set(float64(diag.LastSnapshotSizeBytes))
 }
 
 // StartServer serves Prometheus metrics on the provided address until the context is canceled.

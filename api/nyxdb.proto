@@ -96,6 +96,8 @@ message SnapshotStatusResponse {
   string leader = 6;
   uint64 applied_index = 7;
   uint64 last_raft_index = 8;
+  int64 last_snapshot_duration_ms = 9;
+  uint64 last_snapshot_size_bytes = 10;
 }
 
 message SnapshotPayload {

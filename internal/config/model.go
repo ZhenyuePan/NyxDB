@@ -30,6 +30,8 @@ type ClusterConfig struct {
 	SnapshotCatchUpEntries   uint64        `yaml:"snapshotCatchUpEntries"`
 	SnapshotDirSizeThreshold uint64        `yaml:"snapshotDirSizeThreshold"`
 	SnapshotMaxDuration      time.Duration `yaml:"snapshotMaxDuration"`
+	SnapshotMinInterval      time.Duration `yaml:"snapshotMinInterval"`
+	SnapshotMaxAppliedLag    uint64        `yaml:"snapshotMaxAppliedLag"`
 }
 
 type ObservabilityConfig struct {
@@ -67,6 +69,17 @@ func (c *ServerConfig) EngineOptions() db.Options {
 		if maxDur <= 0 {
 			maxDur = 2 * time.Minute
 		}
+		minInterval := c.Cluster.SnapshotMinInterval
+		if minInterval <= 0 {
+			minInterval = interval / 2
+			if minInterval <= 0 {
+				minInterval = time.Minute
+			}
+		}
+		maxLag := c.Cluster.SnapshotMaxAppliedLag
+		if maxLag == 0 && c.Cluster.SnapshotCatchUpEntries > 0 {
+			maxLag = 2 * c.Cluster.SnapshotCatchUpEntries
+		}
 		opts.ClusterConfig = &db.ClusterOptions{
 			ClusterMode:              true,
 			NodeAddress:              nodeAddr,
@@ -78,6 +91,8 @@ func (c *ServerConfig) EngineOptions() db.Options {
 			SnapshotCatchUpEntries:   catchUp,
 			SnapshotDirSizeThreshold: c.Cluster.SnapshotDirSizeThreshold,
 			SnapshotMaxDuration:      maxDur,
+			SnapshotMinInterval:      minInterval,
+			SnapshotMaxAppliedLag:    maxLag,
 		}
 	} else {
 		opts.ClusterConfig = nil

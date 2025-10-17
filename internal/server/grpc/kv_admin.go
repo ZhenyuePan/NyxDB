@@ -28,8 +28,8 @@ type kvCluster interface {
 	EndReadTxn([]byte) error
 	TriggerMerge(force bool) error
 	LeaderAddress() string
-    TriggerSnapshot(force bool) error
-    SnapshotStatus() cluster.SnapshotStatus
+	TriggerSnapshot(force bool) error
+	SnapshotStatus() cluster.SnapshotStatus
 }
 
 type KVService struct {
@@ -204,21 +204,35 @@ func (s *AdminService) TriggerSnapshot(ctx context.Context, req *api.TriggerSnap
 }
 
 func (s *AdminService) SnapshotStatus(ctx context.Context, req *api.SnapshotStatusRequest) (*api.SnapshotStatusResponse, error) {
-    if s.cluster == nil {
-        return nil, fmt.Errorf("cluster not available")
-    }
-    st := s.cluster.SnapshotStatus()
-    resp := &api.SnapshotStatusResponse{
-        InProgress:            st.InProgress,
-        LastSnapshotIndex:     st.LastSnapshotIndex,
-        EntriesSince:          st.EntriesSince,
-        LastSnapshotTimeUnix:  st.LastSnapshotTime.Unix(),
-        InProgressSinceUnix:   st.InProgressSince.Unix(),
-        Leader:                st.Leader,
-        AppliedIndex:          st.AppliedIndex,
-        LastRaftIndex:         st.LastRaftIndex,
-    }
-    return resp, nil
+	if s.cluster == nil {
+		return nil, fmt.Errorf("cluster not available")
+	}
+	st := s.cluster.SnapshotStatus()
+	lastSnapshotUnix := st.LastSnapshotTime.Unix()
+	if st.LastSnapshotTime.IsZero() {
+		lastSnapshotUnix = 0
+	}
+	inProgressUnix := st.InProgressSince.Unix()
+	if st.InProgressSince.IsZero() {
+		inProgressUnix = 0
+	}
+	var durationMs int64
+	if st.LastSnapshotDuration > 0 {
+		durationMs = st.LastSnapshotDuration.Milliseconds()
+	}
+	resp := &api.SnapshotStatusResponse{
+		InProgress:             st.InProgress,
+		LastSnapshotIndex:      st.LastSnapshotIndex,
+		EntriesSince:           st.EntriesSince,
+		LastSnapshotTimeUnix:   lastSnapshotUnix,
+		InProgressSinceUnix:    inProgressUnix,
+		Leader:                 st.Leader,
+		AppliedIndex:           st.AppliedIndex,
+		LastRaftIndex:          st.LastRaftIndex,
+		LastSnapshotDurationMs: durationMs,
+		LastSnapshotSizeBytes:  st.LastSnapshotSizeBytes,
+	}
+	return resp, nil
 }
 
 func registerKVAdminServers(s *grpc.Server, cl *cluster.Cluster) {

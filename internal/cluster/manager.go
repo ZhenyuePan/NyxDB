@@ -67,11 +67,15 @@ type Cluster struct {
 	snapshotInterval       time.Duration
 	snapshotMinEntries     uint64
 	snapshotCatchUpEntries uint64
+	snapshotMinInterval    time.Duration
+	snapshotMaxAppliedLag  uint64
 	snapshotMu             sync.Mutex
 	snapshotInProgress     bool
 	snapshotStartAt        time.Time
 	snapshotMaxDuration    time.Duration
 	lastSnapshotIndex      uint64
+	lastSnapshotDuration   time.Duration
+	lastSnapshotSizeBytes  uint64
 
 	// Leader change observation to avoid snapshot jitter
 	lastLeader         uint64
@@ -183,6 +187,37 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		} else {
 			cluster.snapshotMaxDuration = 2 * time.Minute
 		}
+		if cc.SnapshotMinInterval > 0 {
+			cluster.snapshotMinInterval = cc.SnapshotMinInterval
+		} else {
+			cluster.snapshotMinInterval = cluster.snapshotInterval / 2
+			if cluster.snapshotMinInterval <= 0 {
+				cluster.snapshotMinInterval = time.Minute
+			}
+		}
+		if cc.SnapshotMaxAppliedLag > 0 {
+			cluster.snapshotMaxAppliedLag = cc.SnapshotMaxAppliedLag
+		} else if cluster.snapshotCatchUpEntries > 0 {
+			cluster.snapshotMaxAppliedLag = 2 * cluster.snapshotCatchUpEntries
+		}
+	}
+	if cluster.snapshotInterval <= 0 {
+		cluster.snapshotInterval = defaultSnapshotInterval
+	}
+	if cluster.snapshotMinInterval <= 0 {
+		cluster.snapshotMinInterval = cluster.snapshotInterval / 2
+		if cluster.snapshotMinInterval <= 0 {
+			cluster.snapshotMinInterval = time.Minute
+		}
+	}
+	if cluster.snapshotCatchUpEntries == 0 {
+		cluster.snapshotCatchUpEntries = defaultSnapshotCatchUpEntries
+	}
+	if cluster.snapshotMaxAppliedLag == 0 {
+		cluster.snapshotMaxAppliedLag = 2 * cluster.snapshotCatchUpEntries
+	}
+	if cluster.snapshotMaxDuration <= 0 {
+		cluster.snapshotMaxDuration = 2 * time.Minute
 	}
 
 	cluster.applier = replication.NewApplier(database)
@@ -590,12 +625,8 @@ func (c *Cluster) TriggerSnapshot(force bool) error {
 		}
 	}
 	// Guard: avoid too-frequent snapshots
-	if !force && !c.lastSnapshotTime.IsZero() && c.snapshotInterval > 0 {
-		minGap := c.snapshotInterval / 2
-		if minGap <= 0 {
-			minGap = 10 * time.Second
-		}
-		if time.Since(c.lastSnapshotTime) < minGap {
+	if !force && !c.lastSnapshotTime.IsZero() && c.snapshotMinInterval > 0 {
+		if time.Since(c.lastSnapshotTime) < c.snapshotMinInterval {
 			return ErrSnapshotNotNeeded
 		}
 	}
@@ -624,11 +655,14 @@ func (c *Cluster) TriggerSnapshot(force bool) error {
 	// Guard: if applied is far behind last, wait a bit
 	if !force && lastIndex > index {
 		lag := lastIndex - index
-		catch := c.snapshotCatchUpEntries
-		if catch == 0 {
-			catch = defaultSnapshotCatchUpEntries
+		maxLag := c.snapshotMaxAppliedLag
+		if maxLag == 0 {
+			maxLag = 2 * c.snapshotCatchUpEntries
+			if maxLag == 0 {
+				maxLag = 2 * defaultSnapshotCatchUpEntries
+			}
 		}
-		if lag > 2*catch {
+		if lag > maxLag {
 			return ErrSnapshotNotNeeded
 		}
 	}
@@ -662,9 +696,14 @@ func (c *Cluster) TriggerSnapshot(force bool) error {
 	if err := c.storage.Compact(compactIndex); err != nil && !errors.Is(err, etcdraft.ErrCompacted) {
 		return fmt.Errorf("compact log: %w", err)
 	}
+	finish := time.Now()
+	elapsed := finish.Sub(now)
+	payloadSize := len(payload.Backup)
 	c.lastSnapshotIndex = newSnap.Metadata.Index
-	c.lastSnapshotTime = time.Now()
-	fmt.Printf("snapshot complete: index=%d payloadSize=%d compactTo=%d elapsed=%s\n", newSnap.Metadata.Index, len(payload.Backup), compactIndex, time.Since(now))
+	c.lastSnapshotTime = finish
+	c.lastSnapshotDuration = elapsed
+	c.lastSnapshotSizeBytes = uint64(payloadSize)
+	fmt.Printf("snapshot complete: index=%d payloadSize=%d compactTo=%d elapsed=%s\n", newSnap.Metadata.Index, payloadSize, compactIndex, elapsed)
 	return nil
 }
 
@@ -793,6 +832,8 @@ type Diagnostics struct {
 	LastSnapshotTime     time.Time
 	ReadTxnCount         int
 	MemberCount          int
+	LastSnapshotDuration time.Duration
+	LastSnapshotSizeBytes uint64
 }
 
 // SnapshotStatus describes current snapshotting state and recent metrics.
@@ -805,6 +846,8 @@ type SnapshotStatus struct {
 	AppliedIndex      uint64
 	LastRaftIndex     uint64
 	Leader            string
+	LastSnapshotDuration time.Duration
+	LastSnapshotSizeBytes uint64
 }
 
 // SnapshotStatus returns the current snapshotting status/metrics.
@@ -817,6 +860,8 @@ func (c *Cluster) SnapshotStatus() SnapshotStatus {
 	}
 	status.LastSnapshotIndex = c.lastSnapshotIndex
 	status.LastSnapshotTime = c.lastSnapshotTime
+	status.LastSnapshotDuration = c.lastSnapshotDuration
+	status.LastSnapshotSizeBytes = c.lastSnapshotSizeBytes
 	status.Leader = c.LeaderAddress()
 	c.snapshotMu.Lock()
 	status.InProgress = c.snapshotInProgress
@@ -830,6 +875,8 @@ func (c *Cluster) Diagnostics() Diagnostics {
 	diag := Diagnostics{
 		LastSnapshotIndex: c.lastSnapshotIndex,
 		LastSnapshotTime:  c.lastSnapshotTime,
+		LastSnapshotDuration: c.lastSnapshotDuration,
+		LastSnapshotSizeBytes: c.lastSnapshotSizeBytes,
 	}
 	if c.raftNode != nil {
 		st := c.raftNode.Status()
@@ -1029,9 +1076,10 @@ func (c *Cluster) runDiagnostics() {
 		case <-ticker.C:
 			diag := c.Diagnostics()
 			if c.diagnosticsEnabled {
-				fmt.Printf("diagnostics: term=%d leader=%d members=%d commit=%d applied=%d lastIndex=%d lastSnapshot=%d entriesSince=%d readTxns=%d snapshotInProgress=%v\n",
+				fmt.Printf("diagnostics: term=%d leader=%d members=%d commit=%d applied=%d lastIndex=%d lastSnapshot=%d entriesSince=%d readTxns=%d snapshotInProgress=%v snapshotDuration=%s snapshotBytes=%d\n",
 					diag.Term, diag.LeaderID, diag.MemberCount, diag.CommittedIndex, diag.AppliedIndex, diag.LastRaftIndex,
-					diag.LastSnapshotIndex, diag.EntriesSinceSnapshot, diag.ReadTxnCount, diag.SnapshotInProgress)
+					diag.LastSnapshotIndex, diag.EntriesSinceSnapshot, diag.ReadTxnCount, diag.SnapshotInProgress,
+					diag.LastSnapshotDuration, diag.LastSnapshotSizeBytes)
 			}
 			c.notifyDiagnostics(diag)
 		case <-c.ctx.Done():
