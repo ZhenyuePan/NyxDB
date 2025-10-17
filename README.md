@@ -1,203 +1,107 @@
-# NyxDB · Cloud-Native Distributed SQL Database
+# NyxDB · Minimal MVP (Strongly‑Consistent KV)
 
-NyxDB is an open-source, cloud-native, strongly consistent database that speaks standard SQL (PostgreSQL / MySQL compatibility in progress) while running on top of an append-only MVCC storage engine, a replicated Raft log, and a modular service layer. The goal is simple: **deliver elastic scale, financial-grade reliability, and a developer-friendly SQL surface on commodity infrastructure.**
+NyxDB 当前聚焦一个可运行的最小 MVP：单 Raft Group 的强一致 KV 存储，支持线性一致读、快照/截断、成员管理与基础健康检查。PD 调度、多 Region 与分布式事务是下一阶段目标。
 
----
-
-## Vision & Design Tenets
-
-| Vision | Details |
-| --- | --- |
-| **Cloud Native First** | NyxDB is designed to live inside Kubernetes: stateless SQL frontends, stateful Raft groups, sidecar aware health signaling, and chaos-tested failure handling. |
-| **Separation of Concerns** | SQL ↔ Transaction ↔ Storage ↔ Replication are cleanly layered. Each tier can evolve independently (e.g. swap parser, tune compaction, change transport). |
-| **Log-Structured & MVCC** | Storage is an append-only Bitcask-inspired engine with multi-version concurrency control. Reads never block writes; merges reclaim space safely. |
-| **Raft is the new Paxos** | Every shard is a Raft group; the Raft log is a first-class API. Linearizable reads rely on ReadIndex, and persistence uses a compacted RaftStorage. |
-| **Automation** | A future PD (Placement Driver) manages region splits, rebalancing, and global timestamp/oracle service. Current work focuses on single-group high availability. |
+**开箱即用：默认关闭可选依赖（PD、Prometheus）→ 一条命令起服务，CLI 直接读写。**
 
 ---
 
-## Architecture Overview
-
-```
-┌──────────────────────┐
-│  SQL Gateway (WIP)   │  ← PostgreSQL/MySQL wire compat planned
-└──────────┬───────────┘
-           │ SQL plan / transactions
-┌──────────▼───────────┐
-│  Txn Coordinator     │  ← MVCC + 2PC (percolator-style roadmap)
-└──────────┬───────────┘
-           │ Replicated log ops
-┌──────────▼───────────┐
-│  Raft Group (HA)     │  ← etcd/raft, gRPC transport, linearizable reads
-└──────────┬───────────┘
-           │ Append-only log records
-┌──────────▼───────────┐
-│  Storage Engine      │  ← Bitcask + MVCC, merge/compaction, backup/restore
-└──────────────────────┘
-```
-
-Current milestone (Phase 2/4):
-1. **Robust Storage Core** – ACID semantics, snapshot isolation, merge GC (complete).
-2. **Highly Available Cluster** – Raft replication, gRPC transport, membership & chaos scenarios (in progress).
-3. **Scalable Cluster** – Region/Shard + PD orchestration (planned).
-4. **Developer Ready** – SQL protocol, coprocessor pushdown, observability, operator (planned).
+**你可以做什么**
+- 强一致写：写入通过 Raft 提案，多数派持久化后提交。
+- 线性一致读：ReadIndex + WaitApplied 确保读取到最新提交点。
+- 快照与截断：手动/自动快照，按阈值与时间间隔控制日志增长。
+- 成员管理：Join/Leave/Members，成员落盘、重启恢复。
+- 健康探针：gRPC Health；Prometheus 可按需开启。
 
 ---
 
-## Key Capabilities (current)
+**快速开始**
+- 需求：Go 1.21+（仅当重新生成 gRPC 代码时需要 `protoc`）
+- 启动服务：
+  ```bash
+  go run cmd/nyxdb-server/main.go -config configs/server.example.yaml
+  ```
+- 写入/读取（线性一致）：
+  ```bash
+  nyxdb-cli kv put --addr 127.0.0.1:10001 --key a --value b
+  nyxdb-cli kv get --addr 127.0.0.1:10001 --key a
+  ```
+- 触发快照（可选）：
+  ```bash
+  nyxdb-cli admin snapshot --addr 127.0.0.1:10001 --force
+  ```
 
-- **Strong consistency**: writes go through Raft, reads use ReadIndex + applied-index waiting.
-- **Snapshot isolation**: `BeginReadTxn / ReadTxnGet / EndReadTxn` with automatic handle TTL reclamation.
-- **Automatic member persistence**: cluster membership survives restarts via `cluster/members.json`.
-- **Chaos-tested replication**: integration tests cover partitions, artificial delay, node restarts.
-- **Diagnostics-ready storage**: `raft/raft_state.bin` persists HardState, entries, snapshots for crash recovery.
-
----
-
-## Quick Start
-
-### Prerequisites
-- Go 1.21+
-- `protoc` / gRPC tooling (if regenerating APIs)
-
-### Single-node playground
-```bash
-go run cmd/nyxdb-server/main.go \
-  -config configs/server.example.yaml
-
-# Example gRPC calls via grpcurl (Put/Get)
-grpcurl -plaintext -d '{"key":"a","value":"b"}' localhost:10001 nyxdb.api.KV/Put
-grpcurl -plaintext -d '{"key":"a"}' localhost:10001 nyxdb.api.KV/Get
-```
-
-### PD prototype
-```
-go run cmd/nyxdb-pd/main.go \
-  -addr 0.0.0.0:18080 \
-  -data /tmp/nyxdb-pd
-```
-Cluster nodes can then call `AttachPDClient(ctx, "127.0.0.1:18080", interval)` to
-stream heartbeats to the PD process (metadata persists across restarts).
-
-### Multi-node (3 replicas)
-1. Copy `configs/server.example.yaml` into three variants: `server1.yaml`, `server2.yaml`, `server3.yaml`.
-   ```yaml
-   # server1.yaml
-   nodeID: 1
-   engine:
-     dir: /tmp/nyxdb-node1
-     enableDiagnostics: true
-   cluster:
-     clusterMode: true
-     nodeAddress: 127.0.0.1:9001    # gRPC address reused if omitted
-     clusterAddresses:
-       - 1@127.0.0.1:9001
-       - 2@127.0.0.1:9002
-       - 3@127.0.0.1:9003
-   grpc:
-     address: 127.0.0.1:10001
-   ```
-2. Start each node with its config (ports adjusted accordingly).
-3. Use the gRPC Admin service:
-   ```bash
-   # Join additional nodes from leader's perspective
-   grpcurl -plaintext -d '{"nodeId":2,"address":"127.0.0.1:9002"}' 127.0.0.1:10001 nyxdb.api.Admin/Join
-   grpcurl -plaintext 127.0.0.1:10001 nyxdb.api.Admin/Members
-   ```
-4. Chaos testing (partition/delay) is covered by `go test ./internal/cluster -run TestClusterChaosResilience`.
+> 默认配置中 `pd.address=""`、`observability.metricsAddress=""`，无需额外进程即可启动；当你需要 PD/指标时再填地址即可。
 
 ---
 
-## gRPC APIs
-
-| Service | Methods | Notes |
-| --- | --- | --- |
-| `nyxdb.api.KV` | `Put`, `Get`, `Delete`, `BeginReadTxn`, `ReadTxnGet`, `EndReadTxn` | `Get` returns `codes.FailedPrecondition` with `leader=` hint when not leader. |
-| `nyxdb.api.Admin` | `Join`, `Leave`, `Members`, `TriggerMerge` | Merge can be forced; future: automatic scheduling. |
-| `nyxdb.api.RaftTransport` | `Send(stream)` | Internal replication stream; exposed via gRPC server. |
-
-Future: SQL service (`SQL.Query/Exec`), health checks, metrics endpoints.
+**最小配置（摘自 configs/server.example.yaml）**
+- `cluster.autoSnapshot`: 启用自动快照
+- `cluster.snapshotInterval / snapshotThreshold`: 快照触发的时间/entries 阈值
+- `grpc.address`: gRPC 服务地址（CLI 连接所用）
+- `pd.address`: 为空则禁用 PD；需要时填 `host:port`
+- `observability.metricsAddress`: 为空则禁用 Prometheus；需要时填 `host:port`
 
 ---
 
-## Project Layout
+**命令行（CLI）**
+- KV：`kv put/get/delete`
+- 只读事务：`kv begin/read/end`（引擎快照读）
+- 管理：`admin members/join/leave/snapshot/merge`
 
-```
-cmd/
-  nyxdb-server/      # Main server process (gRPC, Raft bootstrap)
-  nyxdb-cli/         # CLI (planned)
-internal/
-  cluster/           # Cluster manager, membership, integration tests
-  config/            # YAML config loader → engine options
-  engine/            # Storage engine (Bitcask+MVCC), options, merge, iterator
-  node/              # Raft node wrapper around etcd/raft
-  raft/              # gRPC transport, transport abstractions
-  server/grpc/       # KV/Admin services, gRPC server lifecycle
-pkg/api/             # gRPC stubs (placeholder, to be replaced by generated code)
-configs/             # Sample configs
-docs/                # Design notes, architecture discussions
-```
+遇到 `not leader` 时，服务端会返回 `leader=<addr>` 提示，CLI 会自动重试到 Leader（只对幂等/读请求生效）。
 
 ---
 
-## Observability & State Files
-
-| Path | Description |
-| --- | --- |
-| `<data_dir>/raft/raft_state.bin` | Raft HardState + entries + snapshot metadata. |
-| `<data_dir>/cluster/members.json` | Persisted nodeID → address map (reloaded at startup). |
-| Merge artifacts | `-merge/` directories are cleaned after successful compaction. |
-
-Observability features:
-
-- gRPC health: standard `grpc.health.v1.Health` service is exposed on the main gRPC port for liveness/readiness probes.
-- Prometheus metrics: set `observability.metricsAddress` in the server config (example: `127.0.0.1:2112`) to expose `/metrics` with gauges for Raft term/indices, member counts, snapshot progress, and read-transactions.
-- Snapshot metrics: each snapshot export records duration and payload size, published via `/metrics` (`cluster_last_snapshot_duration_seconds`, `cluster_last_snapshot_size_bytes`) and `admin snapshot-status`.
-
-The longer-term roadmap still includes richer metrics (engine IO, pprof) and SQL-layer observability.
-
-### Snapshot tuning knobs
-
-`cluster` config exposes several guardrails to control snapshot cadence:
-
-- `snapshotMinInterval`: minimum wall-clock gap between successive snapshots.
-- `snapshotMaxAppliedLag`: maximum allowed `lastIndex - appliedIndex` gap before snapshots are blocked (defaults to `2 * snapshotCatchUpEntries`).
-- `snapshotDirSizeThreshold`, `snapshotThreshold`, and `snapshotCatchUpEntries` continue to bound log growth and retention.
+**实现要点（怎么工作的）**
+- 写入：`KV/Put` → `internal/cluster/manager.go:Propose` → Raft → 提交后 `replication.Applier` 写入引擎。
+- 读取：`KV/Get` → `Node.ReadIndex`（`internal/node/node.go:ReadIndex`）→ `Node.WaitApplied` → 引擎 `DB.Get`。
+- 快照：`Cluster.TriggerSnapshot`（`internal/cluster/manager.go:612`）打包引擎目录，持久到 `internal/raftstorage`，并按 catch‑up 窗口截断日志；Follower 收到 Snapshot 自动恢复并 reopen 引擎。
+- 传输：gRPC RaftTransport（`internal/raft/transport_grpc.go`）。
+- 健康：`grpc_health_v1`（`internal/server/grpc/server.go`）。
 
 ---
 
-## Roadmap Snapshot
-
-| Phase | Focus | Status |
-| --- | --- | --- |
-| Phase 1 | Storage engine, MVCC, merge, backups | ✅ |
-| Phase 2 | Raft HA, gRPC transport, membership, linearizable reads | 🛠️ (current) |
-| Phase 3 | Region sharding, PD service, distributed transactions | 🔜 |
-| Phase 4 | SQL compatibility, coprocessor pushdown, operator & observability | 🔜 |
-
-Near-term TODOs:
-1. Transport address configuration (reuse gRPC address by default, documented).
-2. Leader hint on NotLeader errors (implemented).
-3. Read-transaction TTL cleaner (implemented).
-4. Raft snapshot/export + log compaction.
-5. CLI tooling & SQL gateway MVP.
+**目录结构（简）**
+- `cmd/nyxdb-server`：服务入口
+- `cmd/nyxdb-cli`：命令行工具
+- `internal/cluster`：读写入口、成员管理、快照/自动化
+- `internal/node`：etcd/raft 封装（Ready/Apply/ReadIndex）
+- `internal/raftstorage`：自研 Raft 持久化
+- `internal/raft`：传输抽象与 gRPC 实现
+- `internal/engine`：Bitcask+MVCC 引擎
+- `internal/server/grpc`：KV/Admin gRPC
+- `internal/pd`：PD 原型（bbolt 持久化，默认不开）
+- `pkg/api`：gRPC 生成代码
 
 ---
 
-## Contributing & Testing
-
-```bash
-# Run all tests (includes chaos integration suites)
-go test ./...
-
-# Run only the cluster chaos test
-go test ./internal/cluster -run TestClusterChaosResilience -count=1
-```
-
-We welcome design discussions, issue reports, and contributions around SQL compatibility, PD orchestration, and observability tooling.
+**可选组件（默认关闭）**
+- PD（控制面原型）：
+  - 启动：`go run cmd/nyxdb-pd/main.go -addr 0.0.0.0:18080 -data /tmp/nyxdb-pd`
+  - 节点：在配置中填写 `pd.address` 后，节点会自动上报 Store/Region 心跳
+  - API：`PD/ListStores`、`PD/GetRegionByKey`（便于观测与路由）
+- Prometheus 指标：设置 `observability.metricsAddress: 127.0.0.1:2112` 后暴露 `/metrics`
 
 ---
 
-## License
+**后续路线（分布式托底 + 能力演进）**
+- 托底：
+  - 联合共识（ConfChangeV2），Leader Transfer；
+  - 快照分块/限速与应用前校验；
+  - Leader‑Lease 快读、Propose/Apply 背压、慢副本限速。
+- 调度（PD）：
+  - Region/Store 视图与 epoch；Add/Remove/Transfer/Split/Merge 调度闭环；
+  - 多 Region 路由（KV 根据 key 选择 Region Leader）。
+- 事务：
+  - 时间戳服务；2PC（Prewrite/Commit/ResolveLock），锁冲突处理与恢复；
+  - 跨 Region 快照读与简单 DML。
 
-This repository is released under the MIT License. See `LICENSE` for details.
+---
+
+**测试**
+- 全量：`go test ./...`
+- 仅集群：`go test ./internal/cluster -run TestCluster`
+- Chaos/快照追赶：`internal/cluster/cluster_integration_test.go`
+
+欢迎就 PD 调度、多 Region、分布式事务与观测一起讨论与共建。

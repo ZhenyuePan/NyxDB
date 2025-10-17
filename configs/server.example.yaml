@@ -24,8 +24,10 @@ cluster:
 grpc:
   address: 127.0.0.1:10001
 pd:
-  address: 127.0.0.1:18080
+  # Leave empty to disable PD integration for the MVP setup.
+  address: ""
+  # Only used when address is provided.
   heartbeatInterval: 2s
 observability:
   # Expose Prometheus metrics on this address. Leave empty to disable.
-  metricsAddress: 127.0.0.1:2112
+  metricsAddress: ""
