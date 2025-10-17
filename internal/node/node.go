@@ -13,13 +13,21 @@ import (
 	rafttransport "nyxdb/internal/raft"
 )
 
+// WritableStorage augments raft.Storage with the write-side primitives the node expects.
+type WritableStorage interface {
+	raft.Storage
+	SetHardState(raftpb.HardState) error
+	Append([]raftpb.Entry) error
+	ApplySnapshot(raftpb.Snapshot) error
+}
+
 // Node RAFT节点结构
 type Node struct {
 	id        uint64
 	raftNode  raft.Node
 	config    *raft.Config
 	transport rafttransport.Transport
-	storage   raft.Storage
+	storage   WritableStorage
 
 	// 状态相关
 	mu      sync.RWMutex
@@ -54,7 +62,7 @@ type Commit struct {
 type NodeConfig struct {
 	ID            uint64
 	Cluster       []raft.Peer
-	Storage       raft.Storage
+	Storage       WritableStorage
 	Transport     rafttransport.Transport
 	TickMs        uint64
 	ElectionTick  int
@@ -81,7 +89,7 @@ func NewNode(config *NodeConfig) *Node {
 	// 创建传输层
 	nodeTransport := config.Transport
 	if nodeTransport == nil {
-		nodeTransport = rafttransport.NewDefaultTransport()
+		nodeTransport = rafttransport.NewNoopTransport()
 	}
 
 	node := &Node{
@@ -155,22 +163,14 @@ func (n *Node) run() {
 		case rd := <-n.raftNode.Ready():
 			// 处理状态变更
 			if !raft.IsEmptyHardState(rd.HardState) {
-				// 保存硬状态
-				// 修改: 使用类型断言来调用SetHardState方法
-				if storage, ok := n.storage.(interface{ SetHardState(raftpb.HardState) error }); ok {
-					if err := storage.SetHardState(rd.HardState); err != nil {
-						n.sendError(err)
-					}
+				if err := n.storage.SetHardState(rd.HardState); err != nil {
+					n.sendError(err)
 				}
 			}
 
-			// 保存条目
 			if len(rd.Entries) > 0 {
-				// 修改: 使用类型断言来调用Append方法
-				if storage, ok := n.storage.(interface{ Append([]raftpb.Entry) error }); ok {
-					if err := storage.Append(rd.Entries); err != nil {
-						n.sendError(err)
-					}
+				if err := n.storage.Append(rd.Entries); err != nil {
+					n.sendError(err)
 				}
 			}
 
@@ -179,11 +179,8 @@ func (n *Node) run() {
 
 			// 应用快照
 			if !raft.IsEmptySnap(rd.Snapshot) {
-				// 修改: 使用类型断言来调用ApplySnapshot方法
-				if storage, ok := n.storage.(interface{ ApplySnapshot(raftpb.Snapshot) error }); ok {
-					if err := storage.ApplySnapshot(rd.Snapshot); err != nil {
-						n.sendError(err)
-					}
+				if err := n.storage.ApplySnapshot(rd.Snapshot); err != nil {
+					n.sendError(err)
 				}
 				n.applySnapshot(rd.Snapshot)
 			}
@@ -290,7 +287,7 @@ func (n *Node) applySnapshot(snapshot raftpb.Snapshot) {
 
 // IsLeader 判断当前节点是否为领导者
 func (n *Node) IsLeader() bool {
- return n.raftNode.Status().Lead == n.id
+	return n.raftNode.Status().Lead == n.id
 }
 
 // Status 获取节点状态

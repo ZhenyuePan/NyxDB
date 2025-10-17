@@ -39,7 +39,7 @@ func TestMain(m *testing.M) {
 		if err != nil {
 			panic(fmt.Sprintf("open engine: %v", err))
 		}
-		cl, err := cluster.NewClusterWithTransport(1, opts, engine, rafttransport.NewDefaultTransport())
+		cl, err := cluster.NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
 		if err != nil {
 			panic(fmt.Sprintf("new cluster: %v", err))
 		}

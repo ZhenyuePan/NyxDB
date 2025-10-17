@@ -35,7 +35,7 @@ func TestClusterLinearizableRead(t *testing.T) {
 	engine, err := db.Open(opts)
 	require.NoError(t, err)
 
-	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewDefaultTransport())
+	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
 	require.NoError(t, err)
 	require.NoError(t, cl.Start())
 	defer func() { _ = cl.Stop() }()
@@ -91,7 +91,7 @@ func TestClusterMembershipPersistence(t *testing.T) {
 	engine, err := db.Open(opts)
 	require.NoError(t, err)
 
-	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewDefaultTransport())
+	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
 	require.NoError(t, err)
 	require.NoError(t, cl.Start())
 
@@ -117,7 +117,7 @@ func TestClusterMembershipPersistence(t *testing.T) {
 	require.NoError(t, err)
 	defer engine2.Close()
 
-	cl2, err := NewClusterWithTransport(1, opts, engine2, rafttransport.NewDefaultTransport())
+	cl2, err := NewClusterWithTransport(1, opts, engine2, rafttransport.NewNoopTransport())
 	require.NoError(t, err)
 	require.NoError(t, cl2.Start())
 	defer func() { _ = cl2.Stop() }()
@@ -141,7 +141,7 @@ func TestClusterTriggerSnapshot(t *testing.T) {
 	engine, err := db.Open(opts)
 	require.NoError(t, err)
 
-	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewDefaultTransport())
+	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
 	require.NoError(t, err)
 	require.NoError(t, cl.Start())
 	defer func() { _ = cl.Stop() }()
@@ -351,7 +351,7 @@ func TestClusterPDHeartbeatWithRegions(t *testing.T) {
 	engine, err := db.Open(opts)
 	require.NoError(t, err)
 
-	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewDefaultTransport())
+	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
 	require.NoError(t, err)
 	defer func() { _ = cl.Stop() }()
 
@@ -396,7 +396,7 @@ func TestClusterDiagnostics(t *testing.T) {
 	engine, err := db.Open(opts)
 	require.NoError(t, err)
 
-	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewDefaultTransport())
+	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
 	require.NoError(t, err)
 	cl.diagnosticsInterval = 20 * time.Millisecond
 	updates := make(chan Diagnostics, 2)

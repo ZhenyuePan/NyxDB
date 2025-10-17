@@ -156,7 +156,7 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		if options.ClusterConfig != nil && options.ClusterConfig.ClusterMode {
 			transport = rafttransport.NewGRPCTransport(nodeID, nil)
 		} else {
-			transport = rafttransport.NewDefaultTransport()
+			transport = rafttransport.NewNoopTransport()
 		}
 	}
 

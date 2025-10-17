@@ -25,7 +25,7 @@ func TestClusterHeartbeatsToPD(t *testing.T) {
 	engine, err := db.Open(opts)
 	require.NoError(t, err)
 
-	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewDefaultTransport())
+	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
 	require.NoError(t, err)
 	defer func() { _ = cl.Stop() }()
 

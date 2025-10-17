@@ -19,7 +19,7 @@ func TestClusterReadTxnTTL(t *testing.T) {
 	engine, err := db.Open(opts)
 	require.NoError(t, err)
 
-	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewDefaultTransport())
+	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
 	require.NoError(t, err)
 	cl.readTxnTTL = 200 * time.Millisecond
 	require.NoError(t, cl.Start())
