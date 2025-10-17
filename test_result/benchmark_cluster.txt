@@ -1,0 +1,10 @@
+PASS
+ok  	nyxdb/benchmark	0.003s
+goos: linux
+goarch: amd64
+pkg: nyxdb/benchmark/cluster
+cpu: Intel(R) Core(TM) i7-14700
+BenchmarkClusterPut-8   	     274	   4570245 ns/op	   58232 B/op	    1079 allocs/op
+BenchmarkClusterGet-8   	  588234	      2103 ns/op	     486 B/op	       9 allocs/op
+PASS
+ok  	nyxdb/benchmark/cluster	9.908s
