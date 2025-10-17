@@ -20,6 +20,9 @@ func (c *Cluster) initDefaultRegions() {
 			State: regionpkg.StateActive,
 		}
 	}
+	if c.nextRegionID <= defaultRegionID {
+		c.nextRegionID = defaultRegionID + 1
+	}
 }
 
 // Regions returns a snapshot of registered regions ordered by start key.

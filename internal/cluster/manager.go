@@ -93,6 +93,9 @@ type Cluster struct {
 	regionMu       sync.RWMutex
 	regions        map[regionpkg.ID]*regionpkg.Region
 	regionReplicas map[regionpkg.ID]*RegionReplica
+	nextRegionID   regionpkg.ID
+	lifecycleMu    sync.RWMutex
+	started        bool
 }
 
 type peerAddress struct {
@@ -251,45 +254,27 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		cluster.membersMu.Unlock()
 	}
 
-	storage, err := NewRaftStorage(regionRaftDir(options.DirPath, defaultRegionID))
+	replica, err := cluster.createRegionReplica(defaultRegionID, cluster.regions[defaultRegionID])
 	if err != nil {
 		cancel()
 		return nil, err
 	}
-	cluster.storage = storage
+	cluster.storage = replica.Storage
 	if snap, err := cluster.storage.Snapshot(); err == nil {
 		cluster.lastSnapshotIndex = snap.Metadata.Index
 	}
-
-	// 初始化RAFT节点
-	raftConfig := &raftnode.NodeConfig{
-		ID:            nodeID,
-		Cluster:       cluster.buildRaftPeers(),
-		Storage:       storage,
-		Transport:     cluster.transport,
-		ElectionTick:  10,
-		HeartbeatTick: 1,
-	}
-
-	if err := cluster.persistMembers(); err != nil {
-		cancel()
-		return nil, err
-	}
-
-	cluster.raftNode = raftnode.NewNode(raftConfig)
-	cluster.registerReplica(&RegionReplica{
-		Region:  cluster.regions[defaultRegionID],
-		Node:    cluster.raftNode,
-		Storage: storage,
-	})
+	cluster.raftNode = replica.Node
 
 	return cluster, nil
 }
 
 // Start 启动集群
 func (c *Cluster) Start() error {
-	// 启动RAFT节点
-	c.raftNode.Start(c.commitC, c.errorC)
+	for _, rep := range c.regionReplicaList() {
+		if rep.Node != nil {
+			rep.Node.Start(c.commitC, c.errorC)
+		}
+	}
 
 	// 启动后台处理协程
 	c.wg.Add(2)
@@ -309,17 +294,22 @@ func (c *Cluster) Start() error {
 		go c.runDiagnostics()
 	}
 
+	c.setStarted(true)
 	return nil
 }
 
 // Stop 停止集群
 func (c *Cluster) Stop() error {
+	c.setStarted(false)
 	c.cancel()
 	c.wg.Wait()
 
-	if c.raftNode != nil {
-		c.raftNode.Stop()
+	for _, rep := range c.regionReplicaList() {
+		if rep.Node != nil {
+			rep.Node.Stop()
+		}
 	}
+	c.raftNode = nil
 
 	return c.db.Close()
 }
