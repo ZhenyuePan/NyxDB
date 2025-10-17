@@ -12,6 +12,7 @@ type ServerConfig struct {
 	Engine        EngineConfig        `yaml:"engine"`
 	Cluster       ClusterConfig       `yaml:"cluster"`
 	GRPC          GRPCConfig          `yaml:"grpc"`
+	PD            PDConfig            `yaml:"pd"`
 	Observability ObservabilityConfig `yaml:"observability"`
 }
 
@@ -40,6 +41,11 @@ type ObservabilityConfig struct {
 
 type GRPCConfig struct {
 	Address string `yaml:"address"`
+}
+
+type PDConfig struct {
+	Address           string        `yaml:"address"`
+	HeartbeatInterval time.Duration `yaml:"heartbeatInterval"`
 }
 
 func (c *ServerConfig) EngineOptions() db.Options {
@@ -106,4 +112,12 @@ func (c *ServerConfig) GRPCConfig() grpcserver.Config {
 
 func (c *ServerConfig) MetricsAddress() string {
 	return c.Observability.MetricsAddress
+}
+
+func (c *ServerConfig) PDAddress() string {
+	return c.PD.Address
+}
+
+func (c *ServerConfig) PDHeartbeatInterval() time.Duration {
+	return c.PD.HeartbeatInterval
 }

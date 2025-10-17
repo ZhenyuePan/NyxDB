@@ -3,9 +3,11 @@ package pd
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 
-	db "nyxdb/internal/engine"
+	bolt "go.etcd.io/bbolt"
 )
 
 type heartbeatStore interface {
@@ -14,56 +16,69 @@ type heartbeatStore interface {
 	Close() error
 }
 
-type bitcaskHeartbeatStore struct {
-	db *db.DB
+type boltHeartbeatStore struct {
+	db *bolt.DB
 }
 
-func newBitcaskHeartbeatStore(dir string) (*bitcaskHeartbeatStore, error) {
-	opts := db.DefaultOptions
-	opts.DirPath = dir
-	opts.EnableDiagnostics = false
-	opts.SyncWrites = true
-	opts.ClusterConfig = nil
+const (
+	boltFileName  = "pd.meta"
+	boltBucketKey = "stores"
+)
 
-	database, err := db.Open(opts)
+func newBoltHeartbeatStore(dir string) (*boltHeartbeatStore, error) {
+	if dir == "" {
+		return nil, fmt.Errorf("pd directory is empty")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	filePath := filepath.Join(dir, boltFileName)
+	db, err := bolt.Open(filePath, 0o600, &bolt.Options{Timeout: 0})
 	if err != nil {
 		return nil, err
 	}
-	return &bitcaskHeartbeatStore{db: database}, nil
+	if err := db.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists([]byte(boltBucketKey))
+		return err
+	}); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return &boltHeartbeatStore{db: db}, nil
 }
 
-func (b *bitcaskHeartbeatStore) Put(hb StoreHeartbeat) error {
+func (b *boltHeartbeatStore) Put(hb StoreHeartbeat) error {
 	data, err := json.Marshal(hb)
 	if err != nil {
 		return err
 	}
 	key := []byte(fmt.Sprintf("%s%d", storeKeyPrefix, hb.StoreID))
-	return b.db.Put(key, data)
+	return b.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(boltBucketKey))
+		if bucket == nil {
+			return fmt.Errorf("bucket %s missing", boltBucketKey)
+		}
+		return bucket.Put(key, data)
+	})
 }
 
-func (b *bitcaskHeartbeatStore) ForEach(fn func(StoreHeartbeat) error) error {
-	iterOpts := db.DefaultIteratorOptions
-	iterOpts.Prefix = []byte(storeKeyPrefix)
-	iter := b.db.NewIterator(iterOpts)
-	defer iter.Close()
-
-	for iter.Rewind(); iter.Valid(); iter.Next() {
-		value, err := iter.Value()
-		if err != nil {
-			return err
+func (b *boltHeartbeatStore) ForEach(fn func(StoreHeartbeat) error) error {
+	return b.db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(boltBucketKey))
+		if bucket == nil {
+			return nil
 		}
-		var hb StoreHeartbeat
-		if err := json.Unmarshal(value, &hb); err != nil {
-			return fmt.Errorf("decode heartbeat %s: %w", iter.Key(), err)
-		}
-		if err := fn(hb); err != nil {
-			return err
-		}
-	}
-	return nil
+		return bucket.ForEach(func(_, v []byte) error {
+			var hb StoreHeartbeat
+			if err := json.Unmarshal(v, &hb); err != nil {
+				return err
+			}
+			return fn(hb)
+		})
+	})
 }
 
-func (b *bitcaskHeartbeatStore) Close() error {
+func (b *boltHeartbeatStore) Close() error {
 	return b.db.Close()
 }
 
@@ -81,7 +96,7 @@ func NewService() *Service {
 
 // NewPersistentService persists heartbeats under dir so PD metadata survives restarts.
 func NewPersistentService(dir string) (*Service, error) {
-	store, err := newBitcaskHeartbeatStore(dir)
+	store, err := newBoltHeartbeatStore(dir)
 	if err != nil {
 		return nil, fmt.Errorf("open pd storage: %w", err)
 	}

@@ -8,7 +8,8 @@ require (
 	github.com/google/btree v1.1.2
 	github.com/huandu/skiplist v1.2.1
 	github.com/prometheus/client_golang v1.19.1
-	github.com/stretchr/testify v1.8.2
+	github.com/stretchr/testify v1.10.0
+	go.etcd.io/bbolt v1.4.3
 	go.etcd.io/etcd/raft/v3 v3.5.23
 	golang.org/x/exp v0.0.0-20230321023759-10a507213a29
 	google.golang.org/grpc v1.76.0

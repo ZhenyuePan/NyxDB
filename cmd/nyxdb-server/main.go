@@ -24,6 +24,9 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	engine, err := db.Open(cfg.EngineOptions())
 	if err != nil {
 		log.Fatalf("failed to open engine: %v", err)
@@ -32,6 +35,13 @@ func main() {
 	cl, err := cluster.NewClusterWithTransport(cfg.NodeID, cfg.EngineOptions(), engine, nil)
 	if err != nil {
 		log.Fatalf("failed to create cluster: %v", err)
+	}
+
+	if pdAddr := cfg.PDAddress(); pdAddr != "" {
+		if err := cl.AttachPDClient(ctx, pdAddr, cfg.PDHeartbeatInterval()); err != nil {
+			log.Fatalf("failed to attach pd client: %v", err)
+		}
+		log.Printf("pd client attached to %s", pdAddr)
 	}
 
 	metricsAddr := cfg.MetricsAddress()
@@ -43,9 +53,6 @@ func main() {
 	if err := cl.Start(); err != nil {
 		log.Fatalf("failed to start cluster: %v", err)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	if metricsAddr != "" {
 		if err := metrics.StartServer(ctx, metricsAddr); err != nil {

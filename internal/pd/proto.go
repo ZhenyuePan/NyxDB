@@ -18,8 +18,12 @@ func ProtoToStoreHeartbeat(p *api.StoreHeartbeatProto) (StoreHeartbeat, error) {
 		Timestamp: time.UnixMilli(p.GetTimestampMs()),
 	}
 	for _, r := range p.GetRegions() {
+		regionMeta := ProtoToRegion(r.GetRegion())
+		if regionMeta.ID == 0 {
+			regionMeta.ID = regionpkg.ID(r.GetRegionId())
+		}
 		hb.Regions = append(hb.Regions, RegionHeartbeat{
-			Region:       regionpkg.Region{ID: regionpkg.ID(r.GetRegionId())},
+			Region:       regionMeta,
 			StoreID:      r.GetStoreId(),
 			Role:         protoRoleToPeerRole(r.GetRole()),
 			AppliedIndex: r.GetAppliedIndex(),
@@ -36,6 +40,7 @@ func StoreHeartbeatToProto(hb StoreHeartbeat) *api.StoreHeartbeatProto {
 			StoreId:      r.StoreID,
 			Role:         peerRoleToProto(r.Role),
 			AppliedIndex: r.AppliedIndex,
+			Region:       RegionToProto(r.Region),
 		})
 	}
 	return &api.StoreHeartbeatProto{
@@ -65,5 +70,69 @@ func peerRoleToProto(role regionpkg.PeerRole) api.RegionRole {
 		return api.RegionRole_REGION_ROLE_LEARNER
 	default:
 		return api.RegionRole_REGION_ROLE_UNSPECIFIED
+	}
+}
+
+// RegionToProto converts a Region metadata object into its protobuf counterpart.
+func RegionToProto(region regionpkg.Region) *api.RegionDescriptor {
+	desc := &api.RegionDescriptor{
+		RegionId:     uint64(region.ID),
+		StartKey:     append([]byte(nil), region.Range.Start...),
+		EndKey:       append([]byte(nil), region.Range.End...),
+		Version:      region.Epoch.Version,
+		ConfVersion:  region.Epoch.ConfVersion,
+		State:        regionStateToProto(region.State),
+		LeaderPeerId: region.Leader,
+	}
+	return desc
+}
+
+// ProtoToRegion converts a protobuf RegionDescriptor into engine metadata.
+func ProtoToRegion(desc *api.RegionDescriptor) regionpkg.Region {
+	if desc == nil {
+		return regionpkg.Region{}
+	}
+	return regionpkg.Region{
+		ID: regionpkg.ID(desc.GetRegionId()),
+		Range: regionpkg.KeyRange{
+			Start: append([]byte(nil), desc.GetStartKey()...),
+			End:   append([]byte(nil), desc.GetEndKey()...),
+		},
+		Epoch: regionpkg.Epoch{
+			Version:     desc.GetVersion(),
+			ConfVersion: desc.GetConfVersion(),
+		},
+		State:  protoStateToRegionState(desc.GetState()),
+		Leader: desc.GetLeaderPeerId(),
+	}
+}
+
+func regionStateToProto(state regionpkg.State) api.RegionState {
+	switch state {
+	case regionpkg.StateActive:
+		return api.RegionState_REGION_STATE_ACTIVE
+	case regionpkg.StateSplitting:
+		return api.RegionState_REGION_STATE_SPLITTING
+	case regionpkg.StateMerging:
+		return api.RegionState_REGION_STATE_MERGING
+	case regionpkg.StateTombstone:
+		return api.RegionState_REGION_STATE_TOMBSTONE
+	default:
+		return api.RegionState_REGION_STATE_UNSPECIFIED
+	}
+}
+
+func protoStateToRegionState(state api.RegionState) regionpkg.State {
+	switch state {
+	case api.RegionState_REGION_STATE_ACTIVE:
+		return regionpkg.StateActive
+	case api.RegionState_REGION_STATE_SPLITTING:
+		return regionpkg.StateSplitting
+	case api.RegionState_REGION_STATE_MERGING:
+		return regionpkg.StateMerging
+	case api.RegionState_REGION_STATE_TOMBSTONE:
+		return regionpkg.StateTombstone
+	default:
+		return regionpkg.StateActive
 	}
 }
