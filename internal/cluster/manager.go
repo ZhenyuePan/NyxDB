@@ -90,8 +90,9 @@ type Cluster struct {
 	diagnosticsMu        sync.RWMutex
 	diagnosticsObservers []func(Diagnostics)
 
-	regionMu sync.RWMutex
-	regions  map[regionpkg.ID]*regionpkg.Region
+	regionMu       sync.RWMutex
+	regions        map[regionpkg.ID]*regionpkg.Region
+	regionReplicas map[regionpkg.ID]*RegionReplica
 }
 
 type peerAddress struct {
@@ -167,6 +168,7 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		diagnosticsEnabled:  options.EnableDiagnostics,
 		diagnosticsInterval: defaultDiagnosticsInterval,
 		regions:             make(map[regionpkg.ID]*regionpkg.Region),
+		regionReplicas:      make(map[regionpkg.ID]*RegionReplica),
 	}
 
 	if options.ClusterConfig != nil {
@@ -249,7 +251,7 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		cluster.membersMu.Unlock()
 	}
 
-	storage, err := NewRaftStorage(filepath.Join(options.DirPath, "raft"))
+	storage, err := NewRaftStorage(regionRaftDir(options.DirPath, defaultRegionID))
 	if err != nil {
 		cancel()
 		return nil, err
@@ -275,6 +277,11 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 	}
 
 	cluster.raftNode = raftnode.NewNode(raftConfig)
+	cluster.registerReplica(&RegionReplica{
+		Region:  cluster.regions[defaultRegionID],
+		Node:    cluster.raftNode,
+		Storage: storage,
+	})
 
 	return cluster, nil
 }
@@ -770,6 +777,7 @@ func (c *Cluster) restoreDatabaseFromSnapshot(backup []byte) error {
 	}
 	preserve := map[string]struct{}{
 		"raft":    {},
+		"regions": {},
 		"cluster": {},
 		"flock":   {},
 	}

@@ -16,6 +16,7 @@ func (db *DB) CreateSnapshot() ([]byte, error) {
 	exclude := map[string]struct{}{
 		fileLockName: {},
 		"raft":       {},
+		"regions":    {},
 		"cluster":    {},
 	}
 	data, err := utils.TarGzDir(db.options.DirPath, exclude)
