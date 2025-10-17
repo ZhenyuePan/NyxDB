@@ -74,3 +74,12 @@ func (c *Cluster) regionReplicaList() []*RegionReplica {
 	}
 	return list
 }
+
+func (c *Cluster) unregisterReplica(id regionpkg.ID) *RegionReplica {
+	c.regionMu.Lock()
+	defer c.regionMu.Unlock()
+	rep := c.regionReplicas[id]
+	delete(c.regionReplicas, id)
+	delete(c.regions, id)
+	return rep
+}

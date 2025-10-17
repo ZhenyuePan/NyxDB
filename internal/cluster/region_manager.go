@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	regionpkg "nyxdb/internal/region"
+	utils "nyxdb/internal/utils"
 )
 
 // CreateStaticRegion registers a new region with the provided key range and
@@ -49,4 +50,19 @@ func (c *Cluster) setStarted(v bool) {
 	c.lifecycleMu.Lock()
 	c.started = v
 	c.lifecycleMu.Unlock()
+}
+
+// RemoveRegion shuts down the replica for a region and deletes its metadata.
+func (c *Cluster) RemoveRegion(id regionpkg.ID) error {
+	rep := c.unregisterReplica(id)
+	if rep == nil {
+		return nil
+	}
+	if rep.Node != nil {
+		rep.Node.Stop()
+	}
+	if err := rep.Storage.Close(); err != nil {
+		return err
+	}
+	return utils.RemoveDir(regionBaseDir(c.options.DirPath, id))
 }

@@ -25,6 +25,12 @@ type RaftStorage struct {
 	entries   []raftpb.Entry
 }
 
+// Close releases resources held by the storage. Currently no-op but provides
+// a hook for future extensions.
+func (s *RaftStorage) Close() error {
+	return nil
+}
+
 // NewRaftStorage constructs a storage rooted at dir. The directory will be created if needed.
 func NewRaftStorage(dir string) (*RaftStorage, error) {
 	if dir == "" {

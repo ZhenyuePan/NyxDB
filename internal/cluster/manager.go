@@ -311,6 +311,10 @@ func (c *Cluster) Stop() error {
 	}
 	c.raftNode = nil
 
+	c.regionMu.Lock()
+	c.regionReplicas = make(map[regionpkg.ID]*RegionReplica)
+	c.regionMu.Unlock()
+
 	return c.db.Close()
 }
 

@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -49,4 +50,38 @@ func TestClusterCreateStaticRegion(t *testing.T) {
 	rep := cl.replica(regionpkg.ID(2))
 	require.NotNil(t, rep)
 	require.NotNil(t, rep.Node)
+}
+
+func TestRemoveRegionCleansUp(t *testing.T) {
+	dir := t.TempDir()
+	opts := db.DefaultOptions
+	opts.DirPath = dir
+	opts.EnableDiagnostics = false
+	opts.ClusterConfig = &db.ClusterOptions{
+		ClusterMode:      true,
+		NodeAddress:      "127.0.0.1:19001",
+		ClusterAddresses: []string{"1@127.0.0.1:19001"},
+	}
+
+	engine, err := db.Open(opts)
+	require.NoError(t, err)
+
+	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewDefaultTransport())
+	require.NoError(t, err)
+
+	region, err := cl.CreateStaticRegion(regionpkg.KeyRange{Start: []byte("x"), End: nil})
+	require.NoError(t, err)
+	require.Equal(t, regionpkg.ID(2), region.ID)
+
+	rep := cl.replica(region.ID)
+	require.NotNil(t, rep)
+
+	require.NoError(t, cl.RemoveRegion(region.ID))
+
+	require.Nil(t, cl.replica(region.ID))
+	if _, err := os.Stat(filepath.Join(opts.DirPath, "regions", "2")); !os.IsNotExist(err) {
+		t.Fatalf("expected region directory removed, err=%v", err)
+	}
+
+	_ = cl.Stop()
 }

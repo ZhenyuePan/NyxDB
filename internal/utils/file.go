@@ -72,3 +72,14 @@ func CopyDir(src, dest string, exclude []string) error {
 		return os.WriteFile(filepath.Join(dest, fileName), data, info.Mode())
 	})
 }
+
+// RemoveDir removes the specified directory if it exists.
+func RemoveDir(path string) error {
+	if path == "" {
+		return nil
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	}
+	return os.RemoveAll(path)
+}
