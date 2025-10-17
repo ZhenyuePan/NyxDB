@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gogo/protobuf/proto"
 	db "nyxdb/internal/engine"
 	raftnode "nyxdb/internal/node"
 	rafttransport "nyxdb/internal/raft"
@@ -21,12 +20,14 @@ import (
 
 	etcdraft "go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
+	protobuf "google.golang.org/protobuf/proto"
 )
 
 const (
 	defaultSnapshotInterval       = 5 * time.Minute
 	defaultSnapshotThreshold      = 1024
 	defaultSnapshotCatchUpEntries = 64
+	defaultDiagnosticsInterval    = 30 * time.Second
 )
 
 // Cluster 代表一个分布式存储集群
@@ -61,23 +62,26 @@ type Cluster struct {
 	readTxns   map[string]*readTxnEntry
 	readTxnTTL time.Duration
 
-    // 快照
-    snapshotEnabled        bool
-    snapshotInterval       time.Duration
-    snapshotMinEntries     uint64
-    snapshotCatchUpEntries uint64
-    snapshotMu             sync.Mutex
-    snapshotInProgress     bool
-    snapshotStartAt        time.Time
-    snapshotMaxDuration    time.Duration
-    lastSnapshotIndex      uint64
+	// 快照
+	snapshotEnabled        bool
+	snapshotInterval       time.Duration
+	snapshotMinEntries     uint64
+	snapshotCatchUpEntries uint64
+	snapshotMu             sync.Mutex
+	snapshotInProgress     bool
+	snapshotStartAt        time.Time
+	snapshotMaxDuration    time.Duration
+	lastSnapshotIndex      uint64
 
-    // Leader change observation to avoid snapshot jitter
-    lastLeader         uint64
-    lastLeaderChangeAt time.Time
+	// Leader change observation to avoid snapshot jitter
+	lastLeader         uint64
+	lastLeaderChangeAt time.Time
 
-    // Last snapshot completion time for frequency guard
-    lastSnapshotTime time.Time
+	// Last snapshot completion time for frequency guard
+	lastSnapshotTime time.Time
+
+	diagnosticsEnabled  bool
+	diagnosticsInterval time.Duration
 }
 
 type peerAddress struct {
@@ -138,44 +142,46 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 	}
 
 	cluster := &Cluster{
-		nodeID:       nodeID,
-		options:      options,
-		db:           database,
-		members:      make(map[uint64]string),
-		commitC:      make(chan *raftnode.Commit, 100),
-		errorC:       make(chan error, 100),
-		ctx:          ctx,
-		cancel:       cancel,
-		nextCommitTs: database.MaxCommittedTs(),
-		transport:    transport,
-		readTxns:     make(map[string]*readTxnEntry),
-		readTxnTTL:   time.Minute,
+		nodeID:              nodeID,
+		options:             options,
+		db:                  database,
+		members:             make(map[uint64]string),
+		commitC:             make(chan *raftnode.Commit, 100),
+		errorC:              make(chan error, 100),
+		ctx:                 ctx,
+		cancel:              cancel,
+		nextCommitTs:        database.MaxCommittedTs(),
+		transport:           transport,
+		readTxns:            make(map[string]*readTxnEntry),
+		readTxnTTL:          time.Minute,
+		diagnosticsEnabled:  options.EnableDiagnostics,
+		diagnosticsInterval: defaultDiagnosticsInterval,
 	}
 
-    if options.ClusterConfig != nil {
-        cc := options.ClusterConfig
-        cluster.snapshotEnabled = cc.AutoSnapshot
-        if cc.SnapshotInterval > 0 {
-            cluster.snapshotInterval = cc.SnapshotInterval
-        } else {
-            cluster.snapshotInterval = defaultSnapshotInterval
-        }
-        if cc.SnapshotThreshold > 0 {
-            cluster.snapshotMinEntries = cc.SnapshotThreshold
-        } else {
-            cluster.snapshotMinEntries = defaultSnapshotThreshold
-        }
-        if cc.SnapshotCatchUpEntries > 0 {
-            cluster.snapshotCatchUpEntries = cc.SnapshotCatchUpEntries
-        } else {
-            cluster.snapshotCatchUpEntries = defaultSnapshotCatchUpEntries
-        }
-        if cc.SnapshotMaxDuration > 0 {
-            cluster.snapshotMaxDuration = cc.SnapshotMaxDuration
-        } else {
-            cluster.snapshotMaxDuration = 2 * time.Minute
-        }
-    }
+	if options.ClusterConfig != nil {
+		cc := options.ClusterConfig
+		cluster.snapshotEnabled = cc.AutoSnapshot
+		if cc.SnapshotInterval > 0 {
+			cluster.snapshotInterval = cc.SnapshotInterval
+		} else {
+			cluster.snapshotInterval = defaultSnapshotInterval
+		}
+		if cc.SnapshotThreshold > 0 {
+			cluster.snapshotMinEntries = cc.SnapshotThreshold
+		} else {
+			cluster.snapshotMinEntries = defaultSnapshotThreshold
+		}
+		if cc.SnapshotCatchUpEntries > 0 {
+			cluster.snapshotCatchUpEntries = cc.SnapshotCatchUpEntries
+		} else {
+			cluster.snapshotCatchUpEntries = defaultSnapshotCatchUpEntries
+		}
+		if cc.SnapshotMaxDuration > 0 {
+			cluster.snapshotMaxDuration = cc.SnapshotMaxDuration
+		} else {
+			cluster.snapshotMaxDuration = 2 * time.Minute
+		}
+	}
 
 	cluster.applier = replication.NewApplier(database)
 
@@ -244,6 +250,13 @@ func (c *Cluster) Start() error {
 	if c.snapshotEnabled && c.snapshotInterval > 0 {
 		c.wg.Add(1)
 		go c.runAutoSnapshot()
+	}
+	if c.diagnosticsEnabled {
+		if c.diagnosticsInterval <= 0 {
+			c.diagnosticsInterval = defaultDiagnosticsInterval
+		}
+		c.wg.Add(1)
+		go c.runDiagnostics()
 	}
 
 	return nil
@@ -529,128 +542,128 @@ func (c *Cluster) TriggerMerge(force bool) error {
 }
 
 func (c *Cluster) TriggerSnapshot(force bool) error {
-    if c.storage == nil {
-        return fmt.Errorf("raft storage not initialized")
-    }
-    if !force && !c.IsLeader() {
-        leader := c.LeaderAddress()
-        if leader != "" {
-            return fmt.Errorf("%w: leader=%s", ErrNotLeader, leader)
-        }
-        return ErrNotLeader
-    }
-    now := time.Now()
-    c.snapshotMu.Lock()
-    if c.snapshotInProgress {
-        // timeout guard
-        if !c.snapshotStartAt.IsZero() && c.snapshotMaxDuration > 0 && now.Sub(c.snapshotStartAt) > c.snapshotMaxDuration {
-            fmt.Printf("snapshot timeout exceeded (>%s), clearing in-progress flag\n", c.snapshotMaxDuration)
-            c.snapshotInProgress = false
-        } else {
-            c.snapshotMu.Unlock()
-            return ErrSnapshotInProgress
-        }
-    }
-    c.snapshotInProgress = true
-    c.snapshotStartAt = now
-    c.snapshotMu.Unlock()
-    defer func() {
-        c.snapshotMu.Lock()
-        c.snapshotInProgress = false
-        c.snapshotStartAt = time.Time{}
-        c.snapshotMu.Unlock()
-    }()
+	if c.storage == nil {
+		return fmt.Errorf("raft storage not initialized")
+	}
+	if !force && !c.IsLeader() {
+		leader := c.LeaderAddress()
+		if leader != "" {
+			return fmt.Errorf("%w: leader=%s", ErrNotLeader, leader)
+		}
+		return ErrNotLeader
+	}
+	now := time.Now()
+	c.snapshotMu.Lock()
+	if c.snapshotInProgress {
+		// timeout guard
+		if !c.snapshotStartAt.IsZero() && c.snapshotMaxDuration > 0 && now.Sub(c.snapshotStartAt) > c.snapshotMaxDuration {
+			fmt.Printf("snapshot timeout exceeded (>%s), clearing in-progress flag\n", c.snapshotMaxDuration)
+			c.snapshotInProgress = false
+		} else {
+			c.snapshotMu.Unlock()
+			return ErrSnapshotInProgress
+		}
+	}
+	c.snapshotInProgress = true
+	c.snapshotStartAt = now
+	c.snapshotMu.Unlock()
+	defer func() {
+		c.snapshotMu.Lock()
+		c.snapshotInProgress = false
+		c.snapshotStartAt = time.Time{}
+		c.snapshotMu.Unlock()
+	}()
 
 	lastIndex, err := c.storage.LastIndex()
 	if err != nil {
 		return fmt.Errorf("snapshot last index: %w", err)
 	}
-    entriesSince := lastIndex - c.lastSnapshotIndex
-    if !force {
-        if c.snapshotMinEntries > 0 && entriesSince < c.snapshotMinEntries {
-            return ErrSnapshotNotNeeded
-        }
-        if lastIndex <= c.lastSnapshotIndex {
-            return ErrSnapshotNotNeeded
-        }
-    }
-    // Guard: avoid too-frequent snapshots
-    if !force && !c.lastSnapshotTime.IsZero() && c.snapshotInterval > 0 {
-        minGap := c.snapshotInterval / 2
-        if minGap <= 0 {
-            minGap = 10 * time.Second
-        }
-        if time.Since(c.lastSnapshotTime) < minGap {
-            return ErrSnapshotNotNeeded
-        }
-    }
-    // Guard: avoid jitter shortly after leader changes
-    if !force && !c.lastLeaderChangeAt.IsZero() && time.Since(c.lastLeaderChangeAt) < 10*time.Second {
-        return ErrSnapshotNotNeeded
-    }
+	entriesSince := lastIndex - c.lastSnapshotIndex
+	if !force {
+		if c.snapshotMinEntries > 0 && entriesSince < c.snapshotMinEntries {
+			return ErrSnapshotNotNeeded
+		}
+		if lastIndex <= c.lastSnapshotIndex {
+			return ErrSnapshotNotNeeded
+		}
+	}
+	// Guard: avoid too-frequent snapshots
+	if !force && !c.lastSnapshotTime.IsZero() && c.snapshotInterval > 0 {
+		minGap := c.snapshotInterval / 2
+		if minGap <= 0 {
+			minGap = 10 * time.Second
+		}
+		if time.Since(c.lastSnapshotTime) < minGap {
+			return ErrSnapshotNotNeeded
+		}
+	}
+	// Guard: avoid jitter shortly after leader changes
+	if !force && !c.lastLeaderChangeAt.IsZero() && time.Since(c.lastLeaderChangeAt) < 10*time.Second {
+		return ErrSnapshotNotNeeded
+	}
 
-    // Guard: size-based triggering (skip if under threshold)
-    if !force && c.options.ClusterConfig != nil && c.options.ClusterConfig.SnapshotDirSizeThreshold > 0 {
-        if dirSize, err := utils.DirSize(c.options.DirPath); err == nil {
-            if uint64(dirSize) < c.options.ClusterConfig.SnapshotDirSizeThreshold {
-                return ErrSnapshotNotNeeded
-            }
-        } else {
-            fmt.Printf("warn: failed to stat dir size: %v\n", err)
-        }
-    }
-    index := c.raftNode.AppliedIndex()
-    if index == 0 {
-        return ErrSnapshotNotNeeded
-    }
-    if !force && index <= c.lastSnapshotIndex {
-        return ErrSnapshotNotNeeded
-    }
-    // Guard: if applied is far behind last, wait a bit
-    if !force && lastIndex > index {
-        lag := lastIndex - index
-        catch := c.snapshotCatchUpEntries
-        if catch == 0 {
-            catch = defaultSnapshotCatchUpEntries
-        }
-        if lag > 2*catch {
-            return ErrSnapshotNotNeeded
-        }
-    }
+	// Guard: size-based triggering (skip if under threshold)
+	if !force && c.options.ClusterConfig != nil && c.options.ClusterConfig.SnapshotDirSizeThreshold > 0 {
+		if dirSize, err := utils.DirSize(c.options.DirPath); err == nil {
+			if uint64(dirSize) < c.options.ClusterConfig.SnapshotDirSizeThreshold {
+				return ErrSnapshotNotNeeded
+			}
+		} else {
+			fmt.Printf("warn: failed to stat dir size: %v\n", err)
+		}
+	}
+	index := c.raftNode.AppliedIndex()
+	if index == 0 {
+		return ErrSnapshotNotNeeded
+	}
+	if !force && index <= c.lastSnapshotIndex {
+		return ErrSnapshotNotNeeded
+	}
+	// Guard: if applied is far behind last, wait a bit
+	if !force && lastIndex > index {
+		lag := lastIndex - index
+		catch := c.snapshotCatchUpEntries
+		if catch == 0 {
+			catch = defaultSnapshotCatchUpEntries
+		}
+		if lag > 2*catch {
+			return ErrSnapshotNotNeeded
+		}
+	}
 
-    st := c.raftNode.Status()
-    fmt.Printf("snapshot start: entriesSince=%d applied=%d lastIndex=%d term=%d lead=%d\n", entriesSince, index, lastIndex, st.Term, st.Lead)
-    backup, err := c.db.CreateSnapshot()
-    if err != nil {
-        return fmt.Errorf("create db snapshot: %w", err)
-    }
-    payload := &api.SnapshotPayload{
-        Backup:       backup,
-        NextCommitTs: c.nextCommitTs,
-    }
-	data, err := proto.Marshal(payload)
+	st := c.raftNode.Status()
+	fmt.Printf("snapshot start: entriesSince=%d applied=%d lastIndex=%d term=%d lead=%d\n", entriesSince, index, lastIndex, st.Term, st.Lead)
+	backup, err := c.db.CreateSnapshot()
+	if err != nil {
+		return fmt.Errorf("create db snapshot: %w", err)
+	}
+	payload := &api.SnapshotPayload{
+		Backup:       backup,
+		NextCommitTs: c.nextCommitTs,
+	}
+	data, err := protobuf.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal snapshot payload: %w", err)
 	}
 	conf := c.storage.ConfState()
-    newSnap, err := c.storage.CreateSnapshot(index, data, &conf)
-    if err != nil {
-        if errors.Is(err, etcdraft.ErrSnapOutOfDate) {
-            return ErrSnapshotNotNeeded
-        }
-        return fmt.Errorf("persist snapshot: %w", err)
-    }
+	newSnap, err := c.storage.CreateSnapshot(index, data, &conf)
+	if err != nil {
+		if errors.Is(err, etcdraft.ErrSnapOutOfDate) {
+			return ErrSnapshotNotNeeded
+		}
+		return fmt.Errorf("persist snapshot: %w", err)
+	}
 	compactIndex := index
 	if c.snapshotCatchUpEntries > 0 && compactIndex > c.snapshotCatchUpEntries {
 		compactIndex = index - c.snapshotCatchUpEntries
 	}
-    if err := c.storage.Compact(compactIndex); err != nil && !errors.Is(err, etcdraft.ErrCompacted) {
-        return fmt.Errorf("compact log: %w", err)
-    }
-    c.lastSnapshotIndex = newSnap.Metadata.Index
-    c.lastSnapshotTime = time.Now()
-    fmt.Printf("snapshot complete: index=%d payloadSize=%d compactTo=%d elapsed=%s\n", newSnap.Metadata.Index, len(payload.Backup), compactIndex, time.Since(now))
-    return nil
+	if err := c.storage.Compact(compactIndex); err != nil && !errors.Is(err, etcdraft.ErrCompacted) {
+		return fmt.Errorf("compact log: %w", err)
+	}
+	c.lastSnapshotIndex = newSnap.Metadata.Index
+	c.lastSnapshotTime = time.Now()
+	fmt.Printf("snapshot complete: index=%d payloadSize=%d compactTo=%d elapsed=%s\n", newSnap.Metadata.Index, len(payload.Backup), compactIndex, time.Since(now))
+	return nil
 }
 
 func (c *Cluster) applyConfChange(cc *raftpb.ConfChange, cs *raftpb.ConfState) {
@@ -688,7 +701,7 @@ func (c *Cluster) applySnapshot(snapshot *raftpb.Snapshot) error {
 		return nil
 	}
 	payload := &api.SnapshotPayload{}
-	if err := proto.Unmarshal(snapshot.Data, payload); err != nil {
+	if err := protobuf.Unmarshal(snapshot.Data, payload); err != nil {
 		return fmt.Errorf("decode snapshot payload: %w", err)
 	}
 	if err := c.restoreDatabaseFromSnapshot(payload.GetBackup()); err != nil {
@@ -764,34 +777,82 @@ var (
 	ErrSnapshotInProgress = errors.New("cluster: snapshot in progress")
 )
 
+// Diagnostics captures a point-in-time view of cluster metrics for observability.
+type Diagnostics struct {
+	LeaderID             uint64
+	Term                 uint64
+	AppliedIndex         uint64
+	CommittedIndex       uint64
+	LastRaftIndex        uint64
+	LastSnapshotIndex    uint64
+	EntriesSinceSnapshot uint64
+	SnapshotInProgress   bool
+	SnapshotStartTime    time.Time
+	LastSnapshotTime     time.Time
+	ReadTxnCount         int
+	MemberCount          int
+}
+
 // SnapshotStatus describes current snapshotting state and recent metrics.
 type SnapshotStatus struct {
-    InProgress        bool
-    LastSnapshotIndex uint64
-    EntriesSince      uint64
-    LastSnapshotTime  time.Time
-    InProgressSince   time.Time
-    AppliedIndex      uint64
-    LastRaftIndex     uint64
-    Leader            string
+	InProgress        bool
+	LastSnapshotIndex uint64
+	EntriesSince      uint64
+	LastSnapshotTime  time.Time
+	InProgressSince   time.Time
+	AppliedIndex      uint64
+	LastRaftIndex     uint64
+	Leader            string
 }
 
 // SnapshotStatus returns the current snapshotting status/metrics.
 func (c *Cluster) SnapshotStatus() SnapshotStatus {
-    var status SnapshotStatus
-    status.AppliedIndex = c.raftNode.AppliedIndex()
-    if last, err := c.storage.LastIndex(); err == nil {
-        status.LastRaftIndex = last
-        status.EntriesSince = last - c.lastSnapshotIndex
-    }
-    status.LastSnapshotIndex = c.lastSnapshotIndex
-    status.LastSnapshotTime = c.lastSnapshotTime
-    status.Leader = c.LeaderAddress()
-    c.snapshotMu.Lock()
-    status.InProgress = c.snapshotInProgress
-    status.InProgressSince = c.snapshotStartAt
-    c.snapshotMu.Unlock()
-    return status
+	var status SnapshotStatus
+	status.AppliedIndex = c.raftNode.AppliedIndex()
+	if last, err := c.storage.LastIndex(); err == nil {
+		status.LastRaftIndex = last
+		status.EntriesSince = last - c.lastSnapshotIndex
+	}
+	status.LastSnapshotIndex = c.lastSnapshotIndex
+	status.LastSnapshotTime = c.lastSnapshotTime
+	status.Leader = c.LeaderAddress()
+	c.snapshotMu.Lock()
+	status.InProgress = c.snapshotInProgress
+	status.InProgressSince = c.snapshotStartAt
+	c.snapshotMu.Unlock()
+	return status
+}
+
+// Diagnostics returns the latest cluster metrics useful for observability.
+func (c *Cluster) Diagnostics() Diagnostics {
+	diag := Diagnostics{
+		LastSnapshotIndex: c.lastSnapshotIndex,
+		LastSnapshotTime:  c.lastSnapshotTime,
+	}
+	if c.raftNode != nil {
+		st := c.raftNode.Status()
+		diag.LeaderID = st.Lead
+		diag.Term = st.Term
+		diag.AppliedIndex = st.Applied
+		diag.CommittedIndex = st.Commit
+	}
+	if c.storage != nil {
+		if last, err := c.storage.LastIndex(); err == nil {
+			diag.LastRaftIndex = last
+			if last >= diag.LastSnapshotIndex {
+				diag.EntriesSinceSnapshot = last - diag.LastSnapshotIndex
+			}
+		}
+	}
+	c.snapshotMu.Lock()
+	diag.SnapshotInProgress = c.snapshotInProgress
+	diag.SnapshotStartTime = c.snapshotStartAt
+	c.snapshotMu.Unlock()
+	diag.ReadTxnCount = c.readTxnCount()
+	c.membersMu.RLock()
+	diag.MemberCount = len(c.members)
+	c.membersMu.RUnlock()
+	return diag
 }
 
 type readTxnEntry struct {
@@ -886,37 +947,65 @@ func (c *Cluster) cleanupExpiredReadTxns() {
 	c.readTxnMu.Unlock()
 }
 
-func (c *Cluster) runAutoSnapshot() {
-    defer c.wg.Done()
-    ticker := time.NewTicker(c.snapshotInterval)
-    defer ticker.Stop()
+func (c *Cluster) readTxnCount() int {
+	c.readTxnMu.RLock()
+	defer c.readTxnMu.RUnlock()
+	return len(c.readTxns)
+}
 
-    for {
-        select {
-        case <-ticker.C:
-            if !c.snapshotEnabled {
-                continue
-            }
-            // Observe leader changes to avoid jitter
-            if c.raftNode != nil {
-                st := c.raftNode.Status()
-                if st.Lead != c.lastLeader {
-                    c.lastLeader = st.Lead
-                    c.lastLeaderChangeAt = time.Now()
-                }
-            }
-            // Skip on followers.
-            if !c.IsLeader() {
-                continue
-            }
-            if err := c.TriggerSnapshot(false); err != nil {
-                if errors.Is(err, ErrSnapshotNotNeeded) || errors.Is(err, ErrSnapshotInProgress) || errors.Is(err, ErrNotLeader) {
-                    continue
-                }
-                fmt.Printf("auto snapshot error: %v\n", err)
-            }
-        case <-c.ctx.Done():
-            return
-        }
-    }
+func (c *Cluster) runAutoSnapshot() {
+	defer c.wg.Done()
+	ticker := time.NewTicker(c.snapshotInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if !c.snapshotEnabled {
+				continue
+			}
+			// Observe leader changes to avoid jitter
+			if c.raftNode != nil {
+				st := c.raftNode.Status()
+				if st.Lead != c.lastLeader {
+					c.lastLeader = st.Lead
+					c.lastLeaderChangeAt = time.Now()
+				}
+			}
+			// Skip on followers.
+			if !c.IsLeader() {
+				continue
+			}
+			if err := c.TriggerSnapshot(false); err != nil {
+				if errors.Is(err, ErrSnapshotNotNeeded) || errors.Is(err, ErrSnapshotInProgress) || errors.Is(err, ErrNotLeader) {
+					continue
+				}
+				fmt.Printf("auto snapshot error: %v\n", err)
+			}
+		case <-c.ctx.Done():
+			return
+		}
+	}
+}
+
+func (c *Cluster) runDiagnostics() {
+	defer c.wg.Done()
+	interval := c.diagnosticsInterval
+	if interval <= 0 {
+		interval = defaultDiagnosticsInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			diag := c.Diagnostics()
+			fmt.Printf("diagnostics: term=%d leader=%d members=%d commit=%d applied=%d lastIndex=%d lastSnapshot=%d entriesSince=%d readTxns=%d snapshotInProgress=%v\n",
+				diag.Term, diag.LeaderID, diag.MemberCount, diag.CommittedIndex, diag.AppliedIndex, diag.LastRaftIndex,
+				diag.LastSnapshotIndex, diag.EntriesSinceSnapshot, diag.ReadTxnCount, diag.SnapshotInProgress)
+		case <-c.ctx.Done():
+			return
+		}
+	}
 }

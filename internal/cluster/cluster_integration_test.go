@@ -238,6 +238,137 @@ func TestClusterChaosResilience(t *testing.T) {
 	waitForValue(t, nodes, []byte("chaos"), []byte("v4"))
 }
 
+func TestClusterSnapshotCatchUp(t *testing.T) {
+	baseDir := t.TempDir()
+	network := newChaosNetwork()
+
+	clusterAddrs := []string{
+		"1@127.0.0.1:19101",
+		"2@127.0.0.1:19102",
+		"3@127.0.0.1:19103",
+	}
+
+	nodes := []*nodeHarness{}
+	for i := 1; i <= 3; i++ {
+		opts := db.DefaultOptions
+		opts.DirPath = filepath.Join(baseDir, fmt.Sprintf("node-%d", i))
+		opts.EnableDiagnostics = false
+		opts.ClusterConfig = &db.ClusterOptions{
+			ClusterMode:            true,
+			NodeAddress:            fmt.Sprintf("127.0.0.1:1910%d", i),
+			ClusterAddresses:       clusterAddrs,
+			AutoSnapshot:           false,
+			SnapshotThreshold:      16,
+			SnapshotCatchUpEntries: 8,
+		}
+
+		transport := newChaosTransport(network, uint64(i))
+		h := &nodeHarness{
+			id:        uint64(i),
+			opts:      opts,
+			transport: transport,
+			network:   network,
+		}
+		startNodeHarness(t, h)
+		nodes = append(nodes, h)
+	}
+
+	t.Cleanup(func() {
+		for _, n := range nodes {
+			stopNodeHarness(n)
+		}
+	})
+
+	leader := waitForHealthyCluster(t, nodes)
+	require.NotNil(t, leader)
+
+	lagger := pickFollower(nodes)
+	require.NotNil(t, lagger)
+
+	network.setPartition(leader.id, lagger.id, true)
+	defer network.setPartition(leader.id, lagger.id, false)
+
+	const totalWrites = 200
+	for i := 0; i < totalWrites; i++ {
+		key := []byte(fmt.Sprintf("snap-key-%d", i))
+		require.NoError(t, leader.cluster.Put(key, []byte("value")))
+	}
+
+	require.Eventually(t, func() bool {
+		return leader.cluster.raftNode.AppliedIndex() >= uint64(totalWrites)
+	}, 5*time.Second, 50*time.Millisecond)
+
+	require.True(t, lagger.cluster.raftNode.AppliedIndex() < uint64(totalWrites))
+
+	require.NoError(t, leader.cluster.TriggerSnapshot(true))
+
+	first, err := leader.cluster.storage.FirstIndex()
+	require.NoError(t, err)
+	catchUp := leader.cluster.snapshotCatchUpEntries
+	require.Greater(t, first, uint64(totalWrites)-catchUp)
+
+	stopNodeHarness(lagger)
+	network.setPartition(leader.id, lagger.id, false)
+
+	require.NoError(t, leader.cluster.Put([]byte("post-snap"), []byte("v2")))
+
+	startNodeHarness(t, lagger)
+
+	leader = waitForHealthyCluster(t, nodes)
+	require.NotNil(t, leader)
+
+	waitForValue(t, nodes, []byte("snap-key-199"), []byte("value"))
+
+	require.Eventually(t, func() bool {
+		if lagger.cluster == nil {
+			return false
+		}
+		val, err := lagger.cluster.db.Get([]byte("snap-key-199"))
+		if err != nil {
+			return false
+		}
+		return bytes.Equal(val, []byte("value"))
+	}, 5*time.Second, 50*time.Millisecond)
+
+	require.NoError(t, leader.cluster.Put([]byte("after-recover"), []byte("ok")))
+	waitForValue(t, nodes, []byte("after-recover"), []byte("ok"))
+}
+
+func TestClusterDiagnostics(t *testing.T) {
+	dir := t.TempDir()
+	opts := db.DefaultOptions
+	opts.DirPath = dir
+	opts.EnableDiagnostics = true
+	opts.ClusterConfig = &db.ClusterOptions{
+		ClusterMode:      true,
+		NodeAddress:      "127.0.0.1:19501",
+		ClusterAddresses: []string{"1@127.0.0.1:19501"},
+	}
+
+	engine, err := db.Open(opts)
+	require.NoError(t, err)
+
+	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewDefaultTransport())
+	require.NoError(t, err)
+	cl.diagnosticsInterval = 20 * time.Millisecond
+	require.NoError(t, cl.Start())
+	defer func() { _ = cl.Stop() }()
+
+	require.Eventually(t, func() bool { return cl.IsLeader() }, 5*time.Second, 50*time.Millisecond)
+	require.NoError(t, cl.Put([]byte("diag"), []byte("value")))
+
+	require.Eventually(t, func() bool {
+		d := cl.Diagnostics()
+		return d.CommittedIndex >= 1 && d.AppliedIndex >= 1
+	}, 5*time.Second, 50*time.Millisecond)
+
+	d := cl.Diagnostics()
+	require.Equal(t, 1, d.MemberCount)
+	require.GreaterOrEqual(t, d.LastRaftIndex, d.CommittedIndex)
+	require.False(t, d.SnapshotInProgress)
+	require.Equal(t, 0, d.ReadTxnCount)
+}
+
 type chaosNetwork struct {
 	mu         sync.RWMutex
 	nodes      map[uint64]*Cluster
