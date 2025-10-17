@@ -70,6 +70,15 @@ grpcurl -plaintext -d '{"key":"a","value":"b"}' localhost:10001 nyxdb.api.KV/Put
 grpcurl -plaintext -d '{"key":"a"}' localhost:10001 nyxdb.api.KV/Get
 ```
 
+### PD prototype
+```
+go run cmd/nyxdb-pd/main.go \
+  -addr 0.0.0.0:18080 \
+  -data /tmp/nyxdb-pd
+```
+Cluster nodes can then call `AttachPDClient(ctx, "127.0.0.1:18080", interval)` to
+stream heartbeats to the PD process (metadata persists across restarts).
+
 ### Multi-node (3 replicas)
 1. Copy `configs/server.example.yaml` into three variants: `server1.yaml`, `server2.yaml`, `server3.yaml`.
    ```yaml

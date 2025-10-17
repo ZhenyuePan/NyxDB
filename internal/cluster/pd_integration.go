@@ -1,10 +1,11 @@
 package cluster
 
 import (
-	"time"
-
+	"context"
 	pd "nyxdb/internal/pd"
+	pdgrpc "nyxdb/internal/pd/grpc"
 	regionpkg "nyxdb/internal/region"
+	"time"
 )
 
 // AttachPD configures the cluster to report heartbeats to a PD service. If
@@ -27,6 +28,21 @@ func (c *Cluster) AttachPD(service pd.Heartbeater, interval time.Duration) {
 		c.wg.Add(1)
 		go c.runPDHeartbeats()
 	}
+}
+
+func (c *Cluster) AttachPDClient(ctx context.Context, target string, interval time.Duration) error {
+	client, err := pdgrpc.NewClient(ctx, target)
+	if err != nil {
+		return err
+	}
+	c.lifecycleMu.Lock()
+	if c.pdCloser != nil {
+		_ = c.pdCloser()
+	}
+	c.pdCloser = client.Close
+	c.lifecycleMu.Unlock()
+	c.AttachPD(client, interval)
+	return nil
 }
 
 func (c *Cluster) runPDHeartbeats() {

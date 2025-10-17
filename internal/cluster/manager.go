@@ -100,6 +100,7 @@ type Cluster struct {
 	pdClient            pd.Heartbeater
 	pdHeartbeatInterval time.Duration
 	pdHeartbeatStarted  bool
+	pdCloser            func() error
 }
 
 type peerAddress struct {
@@ -321,7 +322,12 @@ func (c *Cluster) Stop() error {
 	c.setStarted(false)
 	c.lifecycleMu.Lock()
 	c.pdHeartbeatStarted = false
+	closer := c.pdCloser
+	c.pdCloser = nil
 	c.lifecycleMu.Unlock()
+	if closer != nil {
+		_ = closer()
+	}
 	c.cancel()
 	c.wg.Wait()
 

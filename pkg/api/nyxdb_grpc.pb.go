@@ -704,3 +704,94 @@ var Admin_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "nyxdb.proto",
 }
+
+const (
+	PD_StoreHeartbeat_FullMethodName = "/nyxdb.api.PD/StoreHeartbeat"
+)
+
+// PDClient is the client API for PD service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type PDClient interface {
+	StoreHeartbeat(ctx context.Context, in *StoreHeartbeatRequest, opts ...grpc.CallOption) (*StoreHeartbeatResponse, error)
+}
+
+type pDClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewPDClient(cc grpc.ClientConnInterface) PDClient {
+	return &pDClient{cc}
+}
+
+func (c *pDClient) StoreHeartbeat(ctx context.Context, in *StoreHeartbeatRequest, opts ...grpc.CallOption) (*StoreHeartbeatResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StoreHeartbeatResponse)
+	err := c.cc.Invoke(ctx, PD_StoreHeartbeat_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// PDServer is the server API for PD service.
+// All implementations must embed UnimplementedPDServer
+// for forward compatibility
+type PDServer interface {
+	StoreHeartbeat(context.Context, *StoreHeartbeatRequest) (*StoreHeartbeatResponse, error)
+	mustEmbedUnimplementedPDServer()
+}
+
+// UnimplementedPDServer must be embedded to have forward compatible implementations.
+type UnimplementedPDServer struct {
+}
+
+func (UnimplementedPDServer) StoreHeartbeat(context.Context, *StoreHeartbeatRequest) (*StoreHeartbeatResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method StoreHeartbeat not implemented")
+}
+func (UnimplementedPDServer) mustEmbedUnimplementedPDServer() {}
+
+// UnsafePDServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to PDServer will
+// result in compilation errors.
+type UnsafePDServer interface {
+	mustEmbedUnimplementedPDServer()
+}
+
+func RegisterPDServer(s grpc.ServiceRegistrar, srv PDServer) {
+	s.RegisterService(&PD_ServiceDesc, srv)
+}
+
+func _PD_StoreHeartbeat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StoreHeartbeatRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PDServer).StoreHeartbeat(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PD_StoreHeartbeat_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PDServer).StoreHeartbeat(ctx, req.(*StoreHeartbeatRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// PD_ServiceDesc is the grpc.ServiceDesc for PD service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var PD_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "nyxdb.api.PD",
+	HandlerType: (*PDServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "StoreHeartbeat",
+			Handler:    _PD_StoreHeartbeat_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "nyxdb.proto",
+}

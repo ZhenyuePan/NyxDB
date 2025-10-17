@@ -48,7 +48,7 @@
   - `GetRegionByKey(key)` 等。
 - Store 上报 Region 状态，PD 决定/返回调度指令（增加/移除副本、转移 leader、触发 split/merge）。
 - 元数据持久化：阶段一可先用 BoltDB/自研 JSON snapshot，实现简单快照 + 重启恢复。
-- 当前进展：`internal/pd` 提供内存版 Service，Cluster 通过周期心跳上报本地 Region 列表和状态，为后续调度指令打基础。
+- 当前进展：`internal/pd` 提供内存/持久化 Service 与 gRPC MVP（`cmd/nyxdb-pd`），Cluster 可通过 `AttachPDClient` 周期上报 Region 列表和状态，为后续调度指令打基础。
 
 ### 3. Region 管理生命周期
 - **Split**：当 Region Size/Key 数达阈值，Store 发起 split，PD 更新元信息，调度新 Region。

@@ -100,6 +100,32 @@ message SnapshotStatusResponse {
   uint64 last_snapshot_size_bytes = 10;
 }
 
+enum RegionRole {
+  REGION_ROLE_UNSPECIFIED = 0;
+  REGION_ROLE_VOTER = 1;
+  REGION_ROLE_LEARNER = 2;
+}
+
+message RegionReplicaDescriptor {
+  uint64 region_id = 1;
+  uint64 store_id = 2;
+  RegionRole role = 3;
+  uint64 applied_index = 4;
+}
+
+message StoreHeartbeatProto {
+  uint64 store_id = 1;
+  string address = 2;
+  repeated RegionReplicaDescriptor regions = 3;
+  int64 timestamp_ms = 4;
+}
+
+message StoreHeartbeatRequest {
+  StoreHeartbeatProto heartbeat = 1;
+}
+
+message StoreHeartbeatResponse {}
+
 message SnapshotPayload {
   bytes backup = 1;
   uint64 next_commit_ts = 2;
@@ -132,4 +158,8 @@ service Admin {
   rpc TriggerMerge(TriggerMergeRequest) returns (TriggerMergeResponse);
   rpc TriggerSnapshot(TriggerSnapshotRequest) returns (TriggerSnapshotResponse);
   rpc SnapshotStatus(SnapshotStatusRequest) returns (SnapshotStatusResponse);
+}
+
+service PD {
+  rpc StoreHeartbeat(StoreHeartbeatRequest) returns (StoreHeartbeatResponse);
 }
