@@ -3,35 +3,23 @@ package cluster
 import (
 	"fmt"
 
+	regionmgr "nyxdb/internal/cluster/regions"
 	raftnode "nyxdb/internal/node"
 	raftstorage "nyxdb/internal/raftstorage"
 	regionpkg "nyxdb/internal/region"
 )
 
-// RegionReplica ties a Region metadata entry to its Raft node and storage.
-type RegionReplica struct {
-	Region  *regionpkg.Region
-	Node    *raftnode.Node
-	Storage *raftstorage.Storage
+// replica returns the replica for a region ID.
+func (c *Cluster) replica(regionID regionpkg.ID) *regionmgr.Replica {
+	return c.regionMgr.Replica(regionID)
 }
 
-func (c *Cluster) registerReplica(rep *RegionReplica) {
-	if rep == nil || rep.Region == nil {
-		return
-	}
-	c.regionMu.Lock()
-	c.regionReplicas[rep.Region.ID] = rep
-	c.regionMu.Unlock()
-}
-
-func (c *Cluster) replica(regionID regionpkg.ID) *RegionReplica {
-	c.regionMu.RLock()
-	defer c.regionMu.RUnlock()
-	return c.regionReplicas[regionID]
+func (c *Cluster) regionReplicaList() []*regionmgr.Replica {
+	return c.regionMgr.Replicas()
 }
 
 // createRegionReplica builds storage and a raft node for the provided region metadata.
-func (c *Cluster) createRegionReplica(id regionpkg.ID, region *regionpkg.Region) (*RegionReplica, error) {
+func (c *Cluster) createRegionReplica(id regionpkg.ID, region *regionpkg.Region) (*regionmgr.Replica, error) {
 	if region == nil {
 		return nil, fmt.Errorf("region metadata missing for id %d", id)
 	}
@@ -54,33 +42,14 @@ func (c *Cluster) createRegionReplica(id regionpkg.ID, region *regionpkg.Region)
 	}
 
 	node := raftnode.NewNode(raftConfig)
-	replica := &RegionReplica{
+	replica := &regionmgr.Replica{
 		Region:  region,
 		Node:    node,
 		Storage: storage,
 	}
-	c.registerReplica(replica)
+	c.regionMgr.RegisterReplica(replica)
 	if c.isStarted() {
 		replica.Node.Start(c.commitC, c.errorC)
 	}
 	return replica, nil
-}
-
-func (c *Cluster) regionReplicaList() []*RegionReplica {
-	c.regionMu.RLock()
-	defer c.regionMu.RUnlock()
-	list := make([]*RegionReplica, 0, len(c.regionReplicas))
-	for _, rep := range c.regionReplicas {
-		list = append(list, rep)
-	}
-	return list
-}
-
-func (c *Cluster) unregisterReplica(id regionpkg.ID) *RegionReplica {
-	c.regionMu.Lock()
-	defer c.regionMu.Unlock()
-	rep := c.regionReplicas[id]
-	delete(c.regionReplicas, id)
-	delete(c.regions, id)
-	return rep
 }

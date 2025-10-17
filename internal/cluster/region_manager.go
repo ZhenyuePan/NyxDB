@@ -3,6 +3,7 @@ package cluster
 import (
 	"fmt"
 
+	regionmgr "nyxdb/internal/cluster/regions"
 	regionpkg "nyxdb/internal/region"
 	utils "nyxdb/internal/utils"
 )
@@ -12,27 +13,14 @@ import (
 // scheduling is introduced. The method must be called before conflicting
 // regions exist; no overlap detection is currently performed.
 func (c *Cluster) CreateStaticRegion(keyRange regionpkg.KeyRange) (*regionpkg.Region, error) {
-	c.regionMu.Lock()
-	id := c.nextRegionID
-	c.nextRegionID++
-	if _, exists := c.regions[id]; exists {
-		c.regionMu.Unlock()
-		return nil, fmt.Errorf("region id %d already exists", id)
+	region := c.regionMgr.CreateRegion(keyRange)
+	if region == nil {
+		return nil, fmt.Errorf("failed to allocate region")
 	}
-	region := &regionpkg.Region{
-		ID:    id,
-		Range: keyRange,
-		Epoch: regionpkg.Epoch{Version: 1, ConfVersion: 1},
-		State: regionpkg.StateActive,
-	}
-	c.regions[id] = region
-	c.regionMu.Unlock()
 
-	replica, err := c.createRegionReplica(id, region)
+	replica, err := c.createRegionReplica(region.ID, region)
 	if err != nil {
-		c.regionMu.Lock()
-		delete(c.regions, id)
-		c.regionMu.Unlock()
+		c.regionMgr.RemoveRegion(region.ID)
 		return nil, err
 	}
 
@@ -54,7 +42,10 @@ func (c *Cluster) setStarted(v bool) {
 
 // RemoveRegion shuts down the replica for a region and deletes its metadata.
 func (c *Cluster) RemoveRegion(id regionpkg.ID) error {
-	rep := c.unregisterReplica(id)
+	if id == regionmgr.DefaultRegionID {
+		return fmt.Errorf("cannot remove default region")
+	}
+	rep := c.regionMgr.RemoveRegion(id)
 	if rep == nil {
 		return nil
 	}

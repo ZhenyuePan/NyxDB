@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	regionmgr "nyxdb/internal/cluster/regions"
 	db "nyxdb/internal/engine"
 	raftnode "nyxdb/internal/node"
 	pd "nyxdb/internal/pd"
@@ -93,10 +94,7 @@ type Cluster struct {
 	diagnosticsMu        sync.RWMutex
 	diagnosticsObservers []func(Diagnostics)
 
-	regionMu            sync.RWMutex
-	regions             map[regionpkg.ID]*regionpkg.Region
-	regionReplicas      map[regionpkg.ID]*RegionReplica
-	nextRegionID        regionpkg.ID
+	regionMgr           *regionmgr.Manager
 	lifecycleMu         sync.RWMutex
 	started             bool
 	pdClient            pd.Heartbeater
@@ -176,9 +174,8 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		readTxnTTL:          time.Minute,
 		diagnosticsEnabled:  options.EnableDiagnostics,
 		diagnosticsInterval: defaultDiagnosticsInterval,
-		regions:             make(map[regionpkg.ID]*regionpkg.Region),
-		regionReplicas:      make(map[regionpkg.ID]*RegionReplica),
 		pdHeartbeatInterval: 2 * time.Second,
+		regionMgr:           regionmgr.NewManager(),
 	}
 
 	if options.ClusterConfig != nil {
@@ -239,7 +236,6 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 	}
 
 	cluster.applier = replication.NewApplier(database)
-	cluster.initDefaultRegions()
 
 	memberDir := filepath.Join(options.DirPath, "cluster")
 	store, err := newMemberStore(memberDir)
@@ -262,7 +258,8 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		cluster.membersMu.Unlock()
 	}
 
-	replica, err := cluster.createRegionReplica(defaultRegionID, cluster.regions[defaultRegionID])
+	defaultRegion := cluster.regionMgr.Region(regionmgr.DefaultRegionID)
+	replica, err := cluster.createRegionReplica(regionmgr.DefaultRegionID, defaultRegion)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -334,10 +331,7 @@ func (c *Cluster) Stop() error {
 		}
 	}
 	c.raftNode = nil
-
-	c.regionMu.Lock()
-	c.regionReplicas = make(map[regionpkg.ID]*RegionReplica)
-	c.regionMu.Unlock()
+	c.regionMgr.ResetReplicas()
 
 	return c.db.Close()
 }
@@ -1057,6 +1051,16 @@ func (c *Cluster) readTxnCount() int {
 	c.readTxnMu.RLock()
 	defer c.readTxnMu.RUnlock()
 	return len(c.readTxns)
+}
+
+// Regions returns a snapshot of current regions.
+func (c *Cluster) Regions() []regionpkg.Region {
+	return c.regionMgr.Regions()
+}
+
+// RegionForKey finds the region containing the provided key.
+func (c *Cluster) RegionForKey(key []byte) *regionpkg.Region {
+	return c.regionMgr.RegionForKey(key)
 }
 
 func (c *Cluster) runAutoSnapshot() {

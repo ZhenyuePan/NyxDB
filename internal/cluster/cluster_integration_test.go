@@ -11,8 +11,11 @@ import (
 	"testing"
 	"time"
 
+	regionmgr "nyxdb/internal/cluster/regions"
 	db "nyxdb/internal/engine"
+	pd "nyxdb/internal/pd"
 	rafttransport "nyxdb/internal/raft"
+	regionpkg "nyxdb/internal/region"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/raft/v3/raftpb"
@@ -332,6 +335,51 @@ func TestClusterSnapshotCatchUp(t *testing.T) {
 
 	require.NoError(t, leader.cluster.Put([]byte("after-recover"), []byte("ok")))
 	waitForValue(t, nodes, []byte("after-recover"), []byte("ok"))
+}
+
+func TestClusterPDHeartbeatWithRegions(t *testing.T) {
+	baseDir := t.TempDir()
+	opts := db.DefaultOptions
+	opts.DirPath = baseDir
+	opts.EnableDiagnostics = false
+	opts.ClusterConfig = &db.ClusterOptions{
+		ClusterMode:      true,
+		NodeAddress:      "127.0.0.1:19001",
+		ClusterAddresses: []string{"1@127.0.0.1:19001"},
+	}
+
+	engine, err := db.Open(opts)
+	require.NoError(t, err)
+
+	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewDefaultTransport())
+	require.NoError(t, err)
+	defer func() { _ = cl.Stop() }()
+
+	// Add a second static region before start so it boots with its own Raft replica.
+	region, err := cl.CreateStaticRegion(regionpkg.KeyRange{Start: []byte("m"), End: []byte("z")})
+	require.NoError(t, err)
+	require.Equal(t, regionmgr.DefaultRegionID+1, region.ID)
+
+	svc := pd.NewService()
+	cl.AttachPD(svc, 20*time.Millisecond)
+
+	require.NoError(t, cl.Start())
+
+	require.Eventually(t, func() bool {
+		hb, ok := svc.Store(1)
+		return ok && len(hb.Regions) >= 2
+	}, time.Second, 20*time.Millisecond)
+
+	hb, ok := svc.Store(1)
+	require.True(t, ok)
+	require.Equal(t, "127.0.0.1:19001", hb.Address)
+	require.GreaterOrEqual(t, len(hb.Regions), 2)
+
+	var seen []regionpkg.ID
+	for _, r := range hb.Regions {
+		seen = append(seen, r.Region.ID)
+	}
+	require.ElementsMatch(t, []regionpkg.ID{regionmgr.DefaultRegionID, region.ID}, seen)
 }
 
 func TestClusterDiagnostics(t *testing.T) {
