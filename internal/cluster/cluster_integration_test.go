@@ -351,6 +351,13 @@ func TestClusterDiagnostics(t *testing.T) {
 	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewDefaultTransport())
 	require.NoError(t, err)
 	cl.diagnosticsInterval = 20 * time.Millisecond
+	updates := make(chan Diagnostics, 2)
+	cl.RegisterDiagnosticsObserver(func(d Diagnostics) {
+		select {
+		case updates <- d:
+		default:
+		}
+	})
 	require.NoError(t, cl.Start())
 	defer func() { _ = cl.Stop() }()
 
@@ -361,6 +368,15 @@ func TestClusterDiagnostics(t *testing.T) {
 		d := cl.Diagnostics()
 		return d.CommittedIndex >= 1 && d.AppliedIndex >= 1
 	}, 5*time.Second, 50*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		select {
+		case <-updates:
+			return true
+		default:
+			return false
+		}
+	}, 2*time.Second, 20*time.Millisecond)
 
 	d := cl.Diagnostics()
 	require.Equal(t, 1, d.MemberCount)

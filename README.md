@@ -139,7 +139,12 @@ docs/                # Design notes, architecture discussions
 | `<data_dir>/cluster/members.json` | Persisted nodeID → address map (reloaded at startup). |
 | Merge artifacts | `-merge/` directories are cleaned after successful compaction. |
 
-Roadmap includes gRPC health, Prometheus metrics, and pprof endpoints.
+Observability features:
+
+- gRPC health: standard `grpc.health.v1.Health` service is exposed on the main gRPC port for liveness/readiness probes.
+- Prometheus metrics: set `observability.metricsAddress` in the server config (example: `127.0.0.1:2112`) to expose `/metrics` with gauges for Raft term/indices, member counts, snapshot progress, and read-transactions.
+
+The longer-term roadmap still includes richer metrics (engine IO, pprof) and SQL-layer observability.
 
 ---
 

@@ -11,6 +11,7 @@ import (
 	"nyxdb/internal/cluster"
 	"nyxdb/internal/config"
 	db "nyxdb/internal/engine"
+	"nyxdb/internal/observability/metrics"
 	grpcserver "nyxdb/internal/server/grpc"
 )
 
@@ -33,12 +34,27 @@ func main() {
 		log.Fatalf("failed to create cluster: %v", err)
 	}
 
+	metricsAddr := cfg.MetricsAddress()
+	if metricsAddr != "" {
+		collector := metrics.NewClusterCollector(nil, "nyxdb")
+		cl.RegisterDiagnosticsObserver(collector.Observe)
+	}
+
 	if err := cl.Start(); err != nil {
 		log.Fatalf("failed to start cluster: %v", err)
 	}
 
-	grpcSrv := grpcserver.NewDefault(cfg.GRPCConfig(), cl)
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if metricsAddr != "" {
+		if err := metrics.StartServer(ctx, metricsAddr); err != nil {
+			log.Fatalf("failed to start metrics server: %v", err)
+		}
+		log.Printf("metrics server listening on %s", metricsAddr)
+	}
+
+	grpcSrv := grpcserver.NewDefault(cfg.GRPCConfig(), cl)
 	if err := grpcSrv.Start(ctx); err != nil {
 		log.Fatalf("failed to start grpc server: %v", err)
 	}

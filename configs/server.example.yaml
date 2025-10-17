@@ -19,3 +19,6 @@ cluster:
   snapshotMaxDuration: 2m
 grpc:
   address: 127.0.0.1:10001
+observability:
+  # Expose Prometheus metrics on this address. Leave empty to disable.
+  metricsAddress: 127.0.0.1:2112

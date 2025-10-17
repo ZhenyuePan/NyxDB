@@ -80,8 +80,10 @@ type Cluster struct {
 	// Last snapshot completion time for frequency guard
 	lastSnapshotTime time.Time
 
-	diagnosticsEnabled  bool
-	diagnosticsInterval time.Duration
+	diagnosticsEnabled   bool
+	diagnosticsInterval  time.Duration
+	diagnosticsMu        sync.RWMutex
+	diagnosticsObservers []func(Diagnostics)
 }
 
 type peerAddress struct {
@@ -251,7 +253,7 @@ func (c *Cluster) Start() error {
 		c.wg.Add(1)
 		go c.runAutoSnapshot()
 	}
-	if c.diagnosticsEnabled {
+	if c.diagnosticsEnabled || c.hasDiagnosticsObserver() {
 		if c.diagnosticsInterval <= 0 {
 			c.diagnosticsInterval = defaultDiagnosticsInterval
 		}
@@ -855,6 +857,31 @@ func (c *Cluster) Diagnostics() Diagnostics {
 	return diag
 }
 
+// RegisterDiagnosticsObserver registers a callback invoked whenever diagnostics are sampled.
+func (c *Cluster) RegisterDiagnosticsObserver(fn func(Diagnostics)) {
+	if fn == nil {
+		return
+	}
+	c.diagnosticsMu.Lock()
+	c.diagnosticsObservers = append(c.diagnosticsObservers, fn)
+	c.diagnosticsMu.Unlock()
+}
+
+func (c *Cluster) notifyDiagnostics(diag Diagnostics) {
+	c.diagnosticsMu.RLock()
+	observers := append([]func(Diagnostics){}, c.diagnosticsObservers...)
+	c.diagnosticsMu.RUnlock()
+	for _, obs := range observers {
+		obs(diag)
+	}
+}
+
+func (c *Cluster) hasDiagnosticsObserver() bool {
+	c.diagnosticsMu.RLock()
+	defer c.diagnosticsMu.RUnlock()
+	return len(c.diagnosticsObservers) > 0
+}
+
 type readTxnEntry struct {
 	txn       *db.ReadTxn
 	createdAt time.Time
@@ -1001,9 +1028,12 @@ func (c *Cluster) runDiagnostics() {
 		select {
 		case <-ticker.C:
 			diag := c.Diagnostics()
-			fmt.Printf("diagnostics: term=%d leader=%d members=%d commit=%d applied=%d lastIndex=%d lastSnapshot=%d entriesSince=%d readTxns=%d snapshotInProgress=%v\n",
-				diag.Term, diag.LeaderID, diag.MemberCount, diag.CommittedIndex, diag.AppliedIndex, diag.LastRaftIndex,
-				diag.LastSnapshotIndex, diag.EntriesSinceSnapshot, diag.ReadTxnCount, diag.SnapshotInProgress)
+			if c.diagnosticsEnabled {
+				fmt.Printf("diagnostics: term=%d leader=%d members=%d commit=%d applied=%d lastIndex=%d lastSnapshot=%d entriesSince=%d readTxns=%d snapshotInProgress=%v\n",
+					diag.Term, diag.LeaderID, diag.MemberCount, diag.CommittedIndex, diag.AppliedIndex, diag.LastRaftIndex,
+					diag.LastSnapshotIndex, diag.EntriesSinceSnapshot, diag.ReadTxnCount, diag.SnapshotInProgress)
+			}
+			c.notifyDiagnostics(diag)
 		case <-c.ctx.Done():
 			return
 		}
