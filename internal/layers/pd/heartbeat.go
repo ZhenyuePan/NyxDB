@@ -23,15 +23,8 @@ type StoreHeartbeat struct {
 	Timestamp time.Time
 }
 
-// Command represents a PD scheduling command (placeholder).
-type Command struct {
-	Type string
-}
-
-// StoreHeartbeatResponse conveys scheduling decisions back to the store.
-type StoreHeartbeatResponse struct {
-	Commands []Command
-}
+// StoreHeartbeatResponse conveys scheduling信息（MVP 暂不下发命令）。
+type StoreHeartbeatResponse struct{}
 
 // Heartbeater abstracts PD services that consume store heartbeats.
 type Heartbeater interface {
@@ -43,5 +36,6 @@ type MetadataClient interface {
 	Heartbeater
 	RegisterRegion(regionpkg.Region) (regionpkg.Region, error)
 	UpdateRegion(regionpkg.Region) (regionpkg.Region, error)
-	RegionsByStore(storeID uint64) ([]RegionSnapshot, error)
+	RegionsByStore(storeID uint64) []RegionSnapshot
+	AllocateTimestamps(count uint32) (uint64, uint32, error)
 }

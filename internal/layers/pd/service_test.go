@@ -6,6 +6,8 @@ import (
 
 	"nyxdb/internal/layers/pd"
 	regionpkg "nyxdb/internal/region"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestServiceHandleHeartbeat(t *testing.T) {
@@ -25,10 +27,7 @@ func TestServiceHandleHeartbeat(t *testing.T) {
 		},
 	}
 
-	resp := svc.HandleHeartbeat(hb)
-	if len(resp.Commands) != 0 {
-		t.Fatalf("expected no commands, got %+v", resp.Commands)
-	}
+	_ = svc.HandleHeartbeat(hb)
 
 	stored, ok := svc.Store(1)
 	if !ok {
@@ -43,13 +42,27 @@ func TestServiceHandleHeartbeat(t *testing.T) {
 		t.Fatalf("expected 1 store, got %d", len(all))
 	}
 
-	snapshot, ok := svc.RegionSnapshot(1)
-	if !ok {
-		t.Fatalf("region snapshot missing")
+	if _, ok := svc.RegionSnapshot(1); ok {
+		t.Fatalf("region metadata should remain empty without registration")
 	}
-	if snapshot.Region.ID != 1 || len(snapshot.Peers) != 1 || snapshot.Peers[0].PeerID == 0 {
-		t.Fatalf("unexpected region snapshot: %+v", snapshot)
-	}
+}
+
+func TestServiceAllocateTimestampsMonotonic(t *testing.T) {
+	svc := pd.NewService()
+	base, count, err := svc.AllocateTimestamps(0)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), base)
+	require.Equal(t, uint32(1), count)
+
+	base2, count2, err := svc.AllocateTimestamps(5)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), base2)
+	require.Equal(t, uint32(5), count2)
+
+	base3, count3, err := svc.AllocateTimestamps(1)
+	require.NoError(t, err)
+	require.Equal(t, uint64(7), base3)
+	require.Equal(t, uint32(1), count3)
 }
 
 func TestPersistentServiceBootstrap(t *testing.T) {
@@ -79,23 +92,12 @@ func TestPersistentServiceBootstrap(t *testing.T) {
 	}
 	defer svc2.Close()
 
-	stored, ok := svc2.Store(42)
-	if !ok {
-		t.Fatalf("expected store 42 after restart")
-	}
-	if stored.Address != hb.Address {
-		t.Fatalf("unexpected addr %s", stored.Address)
-	}
-	if len(stored.Regions) != 1 || stored.Regions[0].Region.ID != 5 {
-		t.Fatalf("unexpected regions: %+v", stored.Regions)
+	if _, ok := svc2.Store(42); ok {
+		t.Fatalf("store heartbeats should be ephemeral across PD restarts")
 	}
 
-	snapshot, ok := svc2.RegionSnapshot(5)
-	if !ok {
-		t.Fatalf("expected region snapshot after restart")
-	}
-	if len(snapshot.Peers) != 1 || snapshot.Peers[0].StoreID != 42 {
-		t.Fatalf("unexpected region snapshot: %+v", snapshot)
+	if _, ok := svc2.RegionSnapshot(5); ok {
+		t.Fatalf("region metadata should not be reconstructed from heartbeats alone")
 	}
 }
 
@@ -136,13 +138,32 @@ func TestServiceRegisterAndUpdateRegion(t *testing.T) {
 		t.Fatalf("leader not updated: %+v", snapshot.Region)
 	}
 
-	snapshots, err := svc.RegionsByStore(2)
-	if err != nil {
-		t.Fatalf("regions by store: %v", err)
-	}
+	snapshots := svc.RegionsByStore(2)
 	if len(snapshots) != 1 {
 		t.Fatalf("expected 1 snapshot, got %d", len(snapshots))
 	}
+}
+
+func TestPersistentServiceAllocateTimestamps(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := pd.NewPersistentService(dir)
+	require.NoError(t, err)
+
+	base, count, err := svc.AllocateTimestamps(3)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), base)
+	require.Equal(t, uint32(3), count)
+
+	require.NoError(t, svc.Close())
+
+	svc2, err := pd.NewPersistentService(dir)
+	require.NoError(t, err)
+	defer svc2.Close()
+
+	base2, count2, err := svc2.AllocateTimestamps(2)
+	require.NoError(t, err)
+	require.Equal(t, uint64(4), base2)
+	require.Equal(t, uint32(2), count2)
 }
 
 func TestPersistentRegionMetadataRecovery(t *testing.T) {
@@ -188,10 +209,7 @@ func TestPersistentRegionMetadataRecovery(t *testing.T) {
 	if len(snapshot.Region.Peers) != len(region.Peers) {
 		t.Fatalf("unexpected peers: %+v", snapshot.Region.Peers)
 	}
-	snapshots, err := svc2.RegionsByStore(1)
-	if err != nil {
-		t.Fatalf("regions by store: %v", err)
-	}
+	snapshots := svc2.RegionsByStore(1)
 	if len(snapshots) != 1 {
 		t.Fatalf("expected snapshot for store 1, got %d", len(snapshots))
 	}

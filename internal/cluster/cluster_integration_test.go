@@ -124,8 +124,7 @@ func TestClusterRegistersRegionsWithPD(t *testing.T) {
 		return snapshot.Region.State == regionpkg.StateActive && len(snapshot.Region.Peers) > 0
 	}, 2*time.Second, 50*time.Millisecond)
 
-	snapshots, err := svc.RegionsByStore(cl.nodeID)
-	require.NoError(t, err)
+	snapshots := svc.RegionsByStore(cl.nodeID)
 	require.GreaterOrEqual(t, len(snapshots), 1)
 
 	require.NoError(t, cl.RemoveRegion(newRegion.ID))
@@ -191,11 +190,10 @@ func TestClusterSyncRegionsFromPD(t *testing.T) {
 
 	cl.AttachPD(svc, time.Second)
 
-	// PD metadata should override the default region epoch.
+	// PD metadata should override核心结构化信息（范围/Epoch）。
 	localDefault := cl.regionMgr.Region(regionmgr.DefaultRegionID)
 	require.NotNil(t, localDefault)
 	require.Equal(t, uint64(5), localDefault.Epoch.Version)
-	require.Equal(t, defaultPeerID, localDefault.Leader)
 
 	// Region 2 should now exist locally even though it wasn't persisted before.
 	localRegionTwo := cl.regionMgr.Region(2)
@@ -204,18 +202,6 @@ func TestClusterSyncRegionsFromPD(t *testing.T) {
 	require.Equal(t, []byte("t"), localRegionTwo.Range.End)
 	require.Equal(t, uint64(3), localRegionTwo.Epoch.Version)
 	require.Len(t, localRegionTwo.Peers, 2)
-
-	// Persisted snapshot should include region 2.
-	regions, _, err := cl.regionStore.Load()
-	require.NoError(t, err)
-	found := false
-	for _, r := range regions {
-		if r.ID == 2 {
-			found = true
-			break
-		}
-	}
-	require.True(t, found, "region 2 metadata should be persisted locally")
 
 	require.NoError(t, cl.Start())
 	defer func() {

@@ -215,6 +215,15 @@ message GetRegionsByStoreResponse {
   repeated RegionSnapshot snapshots = 1;
 }
 
+message AllocateTimestampRequest {
+  uint32 count = 1;
+}
+
+message AllocateTimestampResponse {
+  uint64 base_ts = 1;
+  uint32 count = 2;
+}
+
 message SnapshotPayload {
   bytes backup = 1;
   uint64 next_commit_ts = 2;
@@ -260,4 +269,5 @@ service PD {
   rpc GetRegion(GetRegionRequest) returns (GetRegionResponse);
   rpc ListRegions(ListRegionsRequest) returns (ListRegionsResponse);
   rpc GetRegionsByStore(GetRegionsByStoreRequest) returns (GetRegionsByStoreResponse);
+  rpc AllocateTimestamp(AllocateTimestampRequest) returns (AllocateTimestampResponse);
 }

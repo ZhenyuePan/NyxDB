@@ -714,6 +714,7 @@ const (
 	PD_GetRegion_FullMethodName         = "/nyxdb.api.PD/GetRegion"
 	PD_ListRegions_FullMethodName       = "/nyxdb.api.PD/ListRegions"
 	PD_GetRegionsByStore_FullMethodName = "/nyxdb.api.PD/GetRegionsByStore"
+	PD_AllocateTimestamp_FullMethodName = "/nyxdb.api.PD/AllocateTimestamp"
 )
 
 // PDClient is the client API for PD service.
@@ -728,6 +729,7 @@ type PDClient interface {
 	GetRegion(ctx context.Context, in *GetRegionRequest, opts ...grpc.CallOption) (*GetRegionResponse, error)
 	ListRegions(ctx context.Context, in *ListRegionsRequest, opts ...grpc.CallOption) (*ListRegionsResponse, error)
 	GetRegionsByStore(ctx context.Context, in *GetRegionsByStoreRequest, opts ...grpc.CallOption) (*GetRegionsByStoreResponse, error)
+	AllocateTimestamp(ctx context.Context, in *AllocateTimestampRequest, opts ...grpc.CallOption) (*AllocateTimestampResponse, error)
 }
 
 type pDClient struct {
@@ -818,6 +820,16 @@ func (c *pDClient) GetRegionsByStore(ctx context.Context, in *GetRegionsByStoreR
 	return out, nil
 }
 
+func (c *pDClient) AllocateTimestamp(ctx context.Context, in *AllocateTimestampRequest, opts ...grpc.CallOption) (*AllocateTimestampResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AllocateTimestampResponse)
+	err := c.cc.Invoke(ctx, PD_AllocateTimestamp_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PDServer is the server API for PD service.
 // All implementations must embed UnimplementedPDServer
 // for forward compatibility
@@ -830,6 +842,7 @@ type PDServer interface {
 	GetRegion(context.Context, *GetRegionRequest) (*GetRegionResponse, error)
 	ListRegions(context.Context, *ListRegionsRequest) (*ListRegionsResponse, error)
 	GetRegionsByStore(context.Context, *GetRegionsByStoreRequest) (*GetRegionsByStoreResponse, error)
+	AllocateTimestamp(context.Context, *AllocateTimestampRequest) (*AllocateTimestampResponse, error)
 	mustEmbedUnimplementedPDServer()
 }
 
@@ -860,6 +873,9 @@ func (UnimplementedPDServer) ListRegions(context.Context, *ListRegionsRequest) (
 }
 func (UnimplementedPDServer) GetRegionsByStore(context.Context, *GetRegionsByStoreRequest) (*GetRegionsByStoreResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetRegionsByStore not implemented")
+}
+func (UnimplementedPDServer) AllocateTimestamp(context.Context, *AllocateTimestampRequest) (*AllocateTimestampResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AllocateTimestamp not implemented")
 }
 func (UnimplementedPDServer) mustEmbedUnimplementedPDServer() {}
 
@@ -1018,6 +1034,24 @@ func _PD_GetRegionsByStore_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PD_AllocateTimestamp_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AllocateTimestampRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PDServer).AllocateTimestamp(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PD_AllocateTimestamp_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PDServer).AllocateTimestamp(ctx, req.(*AllocateTimestampRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PD_ServiceDesc is the grpc.ServiceDesc for PD service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1056,6 +1090,10 @@ var PD_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetRegionsByStore",
 			Handler:    _PD_GetRegionsByStore_Handler,
+		},
+		{
+			MethodName: "AllocateTimestamp",
+			Handler:    _PD_AllocateTimestamp_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

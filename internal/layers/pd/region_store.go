@@ -1,6 +1,7 @@
 package pd
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,6 +16,8 @@ type regionMetadataStore interface {
 	Delete(regionpkg.ID) error
 	ForEach(func(regionpkg.Region) error) error
 	Close() error
+	LoadTSO() (uint64, error)
+	SaveTSO(uint64) error
 }
 
 type boltRegionStore struct {
@@ -24,7 +27,10 @@ type boltRegionStore struct {
 const (
 	boltRegionFileName  = "pd.regions"
 	boltRegionBucketKey = "regions"
+	boltMetaBucketKey   = "meta"
 )
+
+const regionKeyPrefix = "region/"
 
 func newBoltRegionStore(dir string) (*boltRegionStore, error) {
 	if dir == "" {
@@ -39,7 +45,10 @@ func newBoltRegionStore(dir string) (*boltRegionStore, error) {
 		return nil, err
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte(boltRegionBucketKey))
+		if _, err := tx.CreateBucketIfNotExists([]byte(boltRegionBucketKey)); err != nil {
+			return err
+		}
+		_, err := tx.CreateBucketIfNotExists([]byte(boltMetaBucketKey))
 		return err
 	}); err != nil {
 		_ = db.Close()
@@ -92,4 +101,33 @@ func (b *boltRegionStore) ForEach(fn func(regionpkg.Region) error) error {
 
 func (b *boltRegionStore) Close() error {
 	return b.db.Close()
+}
+
+func (b *boltRegionStore) LoadTSO() (uint64, error) {
+	var value uint64
+	err := b.db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(boltMetaBucketKey))
+		if bucket == nil {
+			return nil
+		}
+		data := bucket.Get([]byte("ts"))
+		if len(data) == 0 {
+			return nil
+		}
+		value = binary.BigEndian.Uint64(data)
+		return nil
+	})
+	return value, err
+}
+
+func (b *boltRegionStore) SaveTSO(ts uint64) error {
+	return b.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(boltMetaBucketKey))
+		if bucket == nil {
+			return fmt.Errorf("bucket %s missing", boltMetaBucketKey)
+		}
+		var buf [8]byte
+		binary.BigEndian.PutUint64(buf[:], ts)
+		return bucket.Put([]byte("ts"), buf[:])
+	})
 }

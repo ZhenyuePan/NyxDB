@@ -117,10 +117,7 @@ func (s *Server) ListRegions(ctx context.Context, req *api.ListRegionsRequest) (
 }
 
 func (s *Server) GetRegionsByStore(ctx context.Context, req *api.GetRegionsByStoreRequest) (*api.GetRegionsByStoreResponse, error) {
-	snapshots, err := s.service.RegionsByStore(req.GetStoreId())
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get regions by store: %v", err)
-	}
+	snapshots := s.service.RegionsByStore(req.GetStoreId())
 	resp := &api.GetRegionsByStoreResponse{
 		Snapshots: make([]*api.RegionSnapshot, 0, len(snapshots)),
 	}
@@ -128,6 +125,14 @@ func (s *Server) GetRegionsByStore(ctx context.Context, req *api.GetRegionsBySto
 		resp.Snapshots = append(resp.Snapshots, pd.RegionSnapshotToProto(snap))
 	}
 	return resp, nil
+}
+
+func (s *Server) AllocateTimestamp(ctx context.Context, req *api.AllocateTimestampRequest) (*api.AllocateTimestampResponse, error) {
+	base, count, err := s.service.AllocateTimestamps(req.GetCount())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "allocate timestamp: %v", err)
+	}
+	return &api.AllocateTimestampResponse{BaseTs: base, Count: count}, nil
 }
 
 func Register(server *grpc.Server, service *pd.Service) {

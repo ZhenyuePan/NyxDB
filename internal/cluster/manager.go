@@ -912,6 +912,9 @@ func (c *Cluster) persistRegions() error {
 	if c.regionStore == nil {
 		return nil
 	}
+	if c.metadataClient() != nil {
+		return nil
+	}
 	regions, next := c.regionMgr.Snapshot()
 	return c.regionStore.Save(regions, next)
 }

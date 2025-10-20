@@ -2,6 +2,7 @@ package pdgrpc
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"google.golang.org/grpc"
@@ -67,23 +68,35 @@ func (c *Client) UpdateRegion(region regionpkg.Region) (regionpkg.Region, error)
 	return updated, nil
 }
 
-func (c *Client) RegionsByStore(storeID uint64) ([]pd.RegionSnapshot, error) {
+func (c *Client) RegionsByStore(storeID uint64) []pd.RegionSnapshot {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	resp, err := c.client.GetRegionsByStore(ctx, &api.GetRegionsByStoreRequest{StoreId: storeID})
 	if err != nil {
-		return nil, err
+		fmt.Printf("pd client: get regions by store %d failed: %v\n", storeID, err)
+		return nil
 	}
 	protos := resp.GetSnapshots()
 	snapshots := make([]pd.RegionSnapshot, 0, len(protos))
 	for _, protoSnap := range protos {
-		snapshot, err := pd.ProtoToRegionSnapshot(protoSnap)
-		if err != nil {
-			return nil, err
+		snapshot, convErr := pd.ProtoToRegionSnapshot(protoSnap)
+		if convErr != nil {
+			fmt.Printf("pd client: decode region snapshot failed: %v\n", convErr)
+			return nil
 		}
 		snapshots = append(snapshots, snapshot)
 	}
-	return snapshots, nil
+	return snapshots
+}
+
+func (c *Client) AllocateTimestamps(count uint32) (uint64, uint32, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resp, err := c.client.AllocateTimestamp(ctx, &api.AllocateTimestampRequest{Count: count})
+	if err != nil {
+		return 0, 0, err
+	}
+	return resp.GetBaseTs(), resp.GetCount(), nil
 }
 
 func (c *Client) Close() error {

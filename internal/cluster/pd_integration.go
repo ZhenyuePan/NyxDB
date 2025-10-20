@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	regionmgr "nyxdb/internal/cluster/regions"
 	pd "nyxdb/internal/layers/pd"
 	pdgrpc "nyxdb/internal/layers/pd/grpc"
 	regionpkg "nyxdb/internal/region"
@@ -110,9 +109,9 @@ func (c *Cluster) metadataClient() pd.MetadataClient {
 }
 
 func (c *Cluster) syncRegionsWithPD(client pd.MetadataClient) {
-	snapshots, err := client.RegionsByStore(c.nodeID)
-	if err != nil {
-		fmt.Printf("pd sync: fetch regions for store %d failed: %v\n", c.nodeID, err)
+	snapshots := client.RegionsByStore(c.nodeID)
+	if snapshots == nil {
+		fmt.Printf("pd sync: fetch regions for store %d failed\n", c.nodeID)
 		return
 	}
 
@@ -142,20 +141,6 @@ func (c *Cluster) syncRegionsWithPD(client pd.MetadataClient) {
 					region.ID, local.Epoch.Version, local.Epoch.ConfVersion, region.Epoch.Version, region.Epoch.ConfVersion)
 				update = true
 			}
-			if local.Leader != region.Leader {
-				fmt.Printf("pd sync: region %d leader mismatch (local=%d PD=%d); adopting PD metadata\n",
-					region.ID, local.Leader, region.Leader)
-				update = true
-			}
-			if local.State != region.State {
-				fmt.Printf("pd sync: region %d state mismatch (local=%d PD=%d); adopting PD metadata\n",
-					region.ID, local.State, region.State)
-				update = true
-			}
-			if !peersEqual(local.Peers, region.Peers) {
-				fmt.Printf("pd sync: region %d peer set mismatch; adopting PD metadata\n", region.ID)
-				update = true
-			}
 		}
 		if update {
 			c.regionMgr.UpsertRegion(region)
@@ -169,9 +154,6 @@ func (c *Cluster) syncRegionsWithPD(client pd.MetadataClient) {
 	locals := c.regionMgr.Regions()
 	for _, local := range locals {
 		if _, ok := seen[local.ID]; ok {
-			continue
-		}
-		if local.ID == regionmgr.DefaultRegionID {
 			continue
 		}
 		fmt.Printf("pd sync: region %d missing on PD; registering local metadata\n", local.ID)
@@ -208,24 +190,4 @@ func (c *Cluster) tombstoneRegionWithPD(client pd.MetadataClient, region regionp
 	if _, err := client.UpdateRegion(region); err != nil && !pd.IsRegionNotFoundError(err) {
 		fmt.Printf("pd: tombstone region %d failed: %v\n", region.ID, err)
 	}
-}
-
-func peersEqual(a, b []regionpkg.Peer) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	lookup := make(map[uint64]regionpkg.Peer, len(a))
-	for _, peer := range a {
-		lookup[peer.StoreID] = peer
-	}
-	for _, peer := range b {
-		local, ok := lookup[peer.StoreID]
-		if !ok {
-			return false
-		}
-		if local.ID != peer.ID || local.Role != peer.Role {
-			return false
-		}
-	}
-	return true
 }

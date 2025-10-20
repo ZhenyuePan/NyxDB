@@ -2,98 +2,22 @@ package pd
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 
-	bolt "go.etcd.io/bbolt"
 	regionpkg "nyxdb/internal/region"
 )
-
-type heartbeatStore interface {
-	Put(StoreHeartbeat) error
-	ForEach(func(StoreHeartbeat) error) error
-	Close() error
-}
-
-type boltHeartbeatStore struct {
-	db *bolt.DB
-}
-
-const (
-	boltFileName  = "pd.meta"
-	boltBucketKey = "stores"
-)
-
-func newBoltHeartbeatStore(dir string) (*boltHeartbeatStore, error) {
-	if dir == "" {
-		return nil, fmt.Errorf("pd directory is empty")
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
-	filePath := filepath.Join(dir, boltFileName)
-	db, err := bolt.Open(filePath, 0o600, &bolt.Options{Timeout: 0})
-	if err != nil {
-		return nil, err
-	}
-	if err := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte(boltBucketKey))
-		return err
-	}); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return &boltHeartbeatStore{db: db}, nil
-}
-
-func (b *boltHeartbeatStore) Put(hb StoreHeartbeat) error {
-	data, err := json.Marshal(hb)
-	if err != nil {
-		return err
-	}
-	key := []byte(fmt.Sprintf("%s%d", storeKeyPrefix, hb.StoreID))
-	return b.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte(boltBucketKey))
-		if bucket == nil {
-			return fmt.Errorf("bucket %s missing", boltBucketKey)
-		}
-		return bucket.Put(key, data)
-	})
-}
-
-func (b *boltHeartbeatStore) ForEach(fn func(StoreHeartbeat) error) error {
-	return b.db.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte(boltBucketKey))
-		if bucket == nil {
-			return nil
-		}
-		return bucket.ForEach(func(_, v []byte) error {
-			var hb StoreHeartbeat
-			if err := json.Unmarshal(v, &hb); err != nil {
-				return err
-			}
-			return fn(hb)
-		})
-	})
-}
-
-func (b *boltHeartbeatStore) Close() error {
-	return b.db.Close()
-}
 
 // Service stores PD metadata, optionally persisting to NyxDB.
 type Service struct {
 	mu            sync.RWMutex
 	stores        map[uint64]StoreHeartbeat
-	store         heartbeatStore
 	regions       map[uint64]*regionMeta
 	regionEntries map[uint64]regionpkg.Region
 	regionStore   regionMetadataStore
+	tsoLast       uint64
 }
 
 var (
@@ -110,32 +34,23 @@ func NewService() *Service {
 		regions:       make(map[uint64]*regionMeta),
 		regionEntries: make(map[uint64]regionpkg.Region),
 	}
-	svc.rebuildRegionsLocked()
 	return svc
 }
 
 // NewPersistentService persists heartbeats under dir so PD metadata survives restarts.
 func NewPersistentService(dir string) (*Service, error) {
-	store, err := newBoltHeartbeatStore(dir)
-	if err != nil {
-		return nil, fmt.Errorf("open pd storage: %w", err)
-	}
-
 	regionStore, err := newBoltRegionStore(dir)
 	if err != nil {
-		_ = store.Close()
 		return nil, fmt.Errorf("open pd region storage: %w", err)
 	}
 
 	svc := &Service{
 		stores:        make(map[uint64]StoreHeartbeat),
-		store:         store,
 		regions:       make(map[uint64]*regionMeta),
 		regionEntries: make(map[uint64]regionpkg.Region),
 		regionStore:   regionStore,
 	}
 	if err := svc.loadFromStore(); err != nil {
-		_ = store.Close()
 		_ = regionStore.Close()
 		return nil, err
 	}
@@ -147,14 +62,6 @@ func NewPersistentService(dir string) (*Service, error) {
 func (s *Service) HandleHeartbeat(hb StoreHeartbeat) StoreHeartbeatResponse {
 	s.mu.Lock()
 	s.stores[hb.StoreID] = hb
-	s.mu.Unlock()
-
-	if s.store != nil {
-		if err := s.store.Put(hb); err != nil {
-			fmt.Printf("pd: persist heartbeat error: %v\n", err)
-		}
-	}
-	s.mu.Lock()
 	s.rebuildRegionsLocked()
 	s.mu.Unlock()
 	return StoreHeartbeatResponse{}
@@ -182,11 +89,6 @@ func (s *Service) Stores() []StoreHeartbeat {
 // Close releases persistent resources if present.
 func (s *Service) Close() error {
 	var err error
-	if s.store != nil {
-		if e := s.store.Close(); err == nil {
-			err = e
-		}
-	}
 	if s.regionStore != nil {
 		if e := s.regionStore.Close(); err == nil {
 			err = e
@@ -195,26 +97,18 @@ func (s *Service) Close() error {
 	return err
 }
 
-const (
-	storeKeyPrefix  = "store/"
-	regionKeyPrefix = "region/"
-)
-
 func (s *Service) loadFromStore() error {
-	if s.store != nil {
-		if err := s.store.ForEach(func(hb StoreHeartbeat) error {
-			s.stores[hb.StoreID] = hb
-			return nil
-		}); err != nil {
-			return err
-		}
-	}
 	if s.regionStore != nil {
 		if err := s.regionStore.ForEach(func(region regionpkg.Region) error {
 			s.regionEntries[uint64(region.ID)] = region.Clone()
 			return nil
 		}); err != nil {
 			return err
+		}
+		if value, err := s.regionStore.LoadTSO(); err != nil {
+			return err
+		} else {
+			s.tsoLast = value
 		}
 	}
 	return nil
@@ -277,6 +171,22 @@ func (s *Service) upsertRegionLocked(region regionpkg.Region) error {
 	return nil
 }
 
+// AllocateTimestamps returns a monotonically increasing range of timestamps.
+func (s *Service) AllocateTimestamps(count uint32) (uint64, uint32, error) {
+	if count == 0 {
+		count = 1
+	}
+	s.mu.Lock()
+	base := s.tsoLast + 1
+	s.tsoLast = base + uint64(count) - 1
+	var err error
+	if s.regionStore != nil {
+		err = s.regionStore.SaveTSO(s.tsoLast)
+	}
+	s.mu.Unlock()
+	return base, count, err
+}
+
 // RegionMetadata returns the persisted metadata for a region.
 func (s *Service) RegionMetadata(id regionpkg.ID) (regionpkg.Region, bool) {
 	s.mu.RLock()
@@ -289,7 +199,7 @@ func (s *Service) RegionMetadata(id regionpkg.ID) (regionpkg.Region, bool) {
 }
 
 // RegionsByStore returns region snapshots containing replicas on the given store.
-func (s *Service) RegionsByStore(storeID uint64) ([]RegionSnapshot, error) {
+func (s *Service) RegionsByStore(storeID uint64) []RegionSnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	snapshots := make([]RegionSnapshot, 0)
@@ -302,10 +212,8 @@ func (s *Service) RegionsByStore(storeID uint64) ([]RegionSnapshot, error) {
 			snapshots = append(snapshots, meta.snapshot())
 		}
 	}
-	sort.Slice(snapshots, func(i, j int) bool {
-		return snapshots[i].Region.ID < snapshots[j].Region.ID
-	})
-	return snapshots, nil
+	sortSnapshots(snapshots)
+	return snapshots
 }
 
 // RegionSnapshot captures metadata about a region and its replicas.
@@ -323,16 +231,16 @@ func (m *regionMeta) snapshot() RegionSnapshot {
 	regionClone := m.region.Clone()
 	peers := make([]RegionHeartbeat, 0, len(m.peers))
 	for _, hb := range m.peers {
-		copy := hb
-		copy.Region = regionClone
-		peers = append(peers, copy)
+		hbCopy := hb
+		hbCopy.Region = regionClone
+		peers = append(peers, hbCopy)
 	}
 	sort.Slice(peers, func(i, j int) bool { return peers[i].StoreID < peers[j].StoreID })
 	return RegionSnapshot{Region: regionClone, Peers: peers}
 }
 
 func (s *Service) rebuildRegionsLocked() {
-	regions := make(map[uint64]*regionMeta)
+	regions := make(map[uint64]*regionMeta, len(s.regionEntries))
 	for id, region := range s.regionEntries {
 		clone := region.Clone()
 		meta := &regionMeta{
@@ -354,70 +262,17 @@ func (s *Service) rebuildRegionsLocked() {
 			regionID := uint64(rh.Region.ID)
 			meta := regions[regionID]
 			if meta == nil {
-				clone := rh.Region.Clone()
-				meta = &regionMeta{
-					region: clone,
-					peers:  make(map[uint64]RegionHeartbeat),
-				}
+				continue
 			}
-			mergeRegionMeta(&meta.region, rh.Region)
-			ensureRegionPeer(&meta.region, rh)
-			meta.peers[rh.StoreID] = RegionHeartbeat{
-				Region:       meta.region.Clone(),
-				StoreID:      rh.StoreID,
-				PeerID:       rh.PeerID,
-				Role:         rh.Role,
-				AppliedIndex: rh.AppliedIndex,
+			peer, ok := meta.peers[rh.StoreID]
+			if !ok {
+				continue
 			}
-			regions[regionID] = meta
+			peer.AppliedIndex = rh.AppliedIndex
+			meta.peers[rh.StoreID] = peer
 		}
 	}
 	s.regions = regions
-}
-
-func mergeRegionMeta(dst *regionpkg.Region, incoming regionpkg.Region) {
-	if dst == nil {
-		return
-	}
-	if len(incoming.Range.Start) > 0 {
-		dst.Range.Start = append([]byte(nil), incoming.Range.Start...)
-	}
-	if len(incoming.Range.End) > 0 {
-		dst.Range.End = append([]byte(nil), incoming.Range.End...)
-	}
-	if incoming.Epoch.Version >= dst.Epoch.Version {
-		dst.Epoch.Version = incoming.Epoch.Version
-	}
-	if incoming.Epoch.ConfVersion >= dst.Epoch.ConfVersion {
-		dst.Epoch.ConfVersion = incoming.Epoch.ConfVersion
-	}
-	if incoming.State != 0 {
-		dst.State = incoming.State
-	}
-	if incoming.Leader != 0 {
-		dst.Leader = incoming.Leader
-	}
-}
-
-func ensureRegionPeer(region *regionpkg.Region, hb RegionHeartbeat) {
-	if region == nil {
-		return
-	}
-	peerID := hb.PeerID
-	if peerID == 0 {
-		peerID = (uint64(region.ID) << 32) | hb.StoreID
-	}
-	for i := range region.Peers {
-		if region.Peers[i].StoreID == hb.StoreID {
-			region.Peers[i].ID = peerID
-			region.Peers[i].Role = hb.Role
-			return
-		}
-	}
-	region.Peers = append(region.Peers, regionpkg.Peer{ID: peerID, StoreID: hb.StoreID, Role: hb.Role})
-	if region.Leader == 0 && hb.Role == regionpkg.Voter {
-		region.Leader = peerID
-	}
 }
 
 func (s *Service) RegionsSnapshot() []RegionSnapshot {
@@ -427,7 +282,7 @@ func (s *Service) RegionsSnapshot() []RegionSnapshot {
 	for _, meta := range s.regions {
 		snapshots = append(snapshots, meta.snapshot())
 	}
-	sort.Slice(snapshots, func(i, j int) bool { return snapshots[i].Region.ID < snapshots[j].Region.ID })
+	sortSnapshots(snapshots)
 	return snapshots
 }
 
@@ -461,4 +316,8 @@ func (s *Service) RegionByKey(key []byte) (RegionSnapshot, bool) {
 		return RegionSnapshot{}, false
 	}
 	return best.snapshot(), true
+}
+
+func sortSnapshots(snaps []RegionSnapshot) {
+	sort.Slice(snaps, func(i, j int) bool { return snaps[i].Region.ID < snaps[j].Region.ID })
 }

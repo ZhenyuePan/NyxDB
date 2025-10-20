@@ -28,18 +28,10 @@ func TestClusterReadTxnTTL(t *testing.T) {
 	handle, _, err := cl.BeginReadTxn()
 	require.NoError(t, err)
 
-	require.Eventually(t, func() bool {
-		cl.readTxnMu.RLock()
-		_, ok := cl.readTxns[string(handle)]
-		cl.readTxnMu.RUnlock()
-		return ok
-	}, time.Second, 10*time.Millisecond)
+	require.Equal(t, 1, cl.readTxnCount())
 
 	require.Eventually(t, func() bool {
-		cl.readTxnMu.RLock()
-		_, ok := cl.readTxns[string(handle)]
-		cl.readTxnMu.RUnlock()
-		return !ok
+		return cl.readTxnCount() == 0
 	}, time.Second, 20*time.Millisecond)
 
 	err = cl.EndReadTxn(handle)
