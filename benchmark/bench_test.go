@@ -3,7 +3,7 @@ package benchmark
 import (
 	"bytes"
 	"math/rand"
-	db "nyxdb/internal/engine"
+	db "nyxdb/internal/layers/engine"
 	"nyxdb/internal/utils"
 	"os"
 	"testing"
@@ -66,7 +66,7 @@ func Benchmark_Delete(b *testing.B) {
 }
 
 func Benchmark_ReadTxnSnapshot(b *testing.B) {
-    key := []byte("benchmark-readtxn")
+	key := []byte("benchmark-readtxn")
 	currentVal := []byte("init-value")
 	assert.Nil(b, dbInstance.Put(key, currentVal))
 

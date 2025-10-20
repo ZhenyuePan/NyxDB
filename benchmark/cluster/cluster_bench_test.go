@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"nyxdb/internal/cluster"
-	db "nyxdb/internal/engine"
-	rafttransport "nyxdb/internal/raft"
+	db "nyxdb/internal/layers/engine"
+	rafttransport "nyxdb/internal/layers/raft/transport"
 )
 
 var (
