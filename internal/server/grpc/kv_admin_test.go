@@ -7,6 +7,7 @@ import (
 
 	"nyxdb/internal/cluster"
 	db "nyxdb/internal/layers/engine"
+	regionpkg "nyxdb/internal/region"
 	api "nyxdb/pkg/api"
 
 	"github.com/stretchr/testify/assert"
@@ -123,6 +124,16 @@ func (f *fakeCluster) LeaderAddress() string {
 
 func (f *fakeCluster) SnapshotStatus() cluster.SnapshotStatus {
 	return cluster.SnapshotStatus{}
+}
+
+func (f *fakeCluster) EnsureRegionReplica(region regionpkg.Region) error {
+	// no-op for tests
+	return nil
+}
+
+func (f *fakeCluster) RemoveRegion(id regionpkg.ID) error {
+	// no-op for tests
+	return nil
 }
 
 func TestKVService_PutGetDelete(t *testing.T) {

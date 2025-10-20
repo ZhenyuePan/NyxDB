@@ -396,38 +396,62 @@ func (c *Cluster) LeaderAddress() string {
 
 // Put 通过RAFT集群存储数据
 func (c *Cluster) Put(key, value []byte) error {
+	region := c.RegionForKey(key)
+	if region == nil {
+		return fmt.Errorf("no region for key")
+	}
+	rep := c.replica(region.ID)
+	if rep == nil || rep.Node == nil {
+		return fmt.Errorf("no replica for region %d", region.ID)
+	}
+	if !rep.Node.IsLeader() {
+		addr := c.leaderAddressForRegion(region.ID)
+		if addr != "" {
+			return fmt.Errorf("%w: leader=%s", ErrNotLeader, addr)
+		}
+		return ErrNotLeader
+	}
 	cmd := &replication.Command{
 		CommitTs: c.allocateCommitTs(),
 		Operations: []replication.Operation{
 			{Key: append([]byte(nil), key...), Value: append([]byte(nil), value...), Type: replication.OpPut},
 		},
 	}
-
 	data, err := cmd.Marshal()
 	if err != nil {
 		return err
 	}
-
-	// 通过RAFT提交命令
-	return c.raftNode.Propose(data)
+	return rep.Node.Propose(data)
 }
 
 // Delete 通过RAFT集群删除数据
 func (c *Cluster) Delete(key []byte) error {
+	region := c.RegionForKey(key)
+	if region == nil {
+		return fmt.Errorf("no region for key")
+	}
+	rep := c.replica(region.ID)
+	if rep == nil || rep.Node == nil {
+		return fmt.Errorf("no replica for region %d", region.ID)
+	}
+	if !rep.Node.IsLeader() {
+		addr := c.leaderAddressForRegion(region.ID)
+		if addr != "" {
+			return fmt.Errorf("%w: leader=%s", ErrNotLeader, addr)
+		}
+		return ErrNotLeader
+	}
 	cmd := &replication.Command{
 		CommitTs: c.allocateCommitTs(),
 		Operations: []replication.Operation{
 			{Key: append([]byte(nil), key...), Type: replication.OpDelete},
 		},
 	}
-
 	data, err := cmd.Marshal()
 	if err != nil {
 		return err
 	}
-
-	// 通过RAFT提交命令
-	return c.raftNode.Propose(data)
+	return rep.Node.Propose(data)
 }
 
 func (c *Cluster) RaftNode() *raftnode.Node {
@@ -447,21 +471,46 @@ func (c *Cluster) Get(key []byte) ([]byte, error) {
 
 // GetLinearizable 执行线性一致读
 func (c *Cluster) GetLinearizable(ctx context.Context, key []byte) ([]byte, error) {
-	if !c.IsLeader() {
-		leaderAddr := c.LeaderAddress()
-		if leaderAddr != "" {
-			return nil, fmt.Errorf("%w: leader=%s", ErrNotLeader, leaderAddr)
+	region := c.RegionForKey(key)
+	if region == nil {
+		return nil, fmt.Errorf("no region for key")
+	}
+	rep := c.replica(region.ID)
+	if rep == nil || rep.Node == nil {
+		return nil, fmt.Errorf("no replica for region %d", region.ID)
+	}
+	if !rep.Node.IsLeader() {
+		addr := c.leaderAddressForRegion(region.ID)
+		if addr != "" {
+			return nil, fmt.Errorf("%w: leader=%s", ErrNotLeader, addr)
 		}
 		return nil, ErrNotLeader
 	}
-	index, err := c.raftNode.ReadIndex(ctx)
+	index, err := rep.Node.ReadIndex(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.raftNode.WaitApplied(ctx, index); err != nil {
+	if err := rep.Node.WaitApplied(ctx, index); err != nil {
 		return nil, err
 	}
 	return c.db.Get(key)
+}
+
+// leaderAddressForRegion returns the leader address for a specific region if known.
+func (c *Cluster) leaderAddressForRegion(regionID regionpkg.ID) string {
+	rep := c.replica(regionID)
+	if rep == nil || rep.Node == nil {
+		return ""
+	}
+	st := rep.Node.Status()
+	if st.Lead == 0 {
+		return ""
+	}
+	storeID := storeIDFromPeer(st.Lead)
+	c.membersMu.RLock()
+	addr := c.members[storeID]
+	c.membersMu.RUnlock()
+	return addr
 }
 
 // BeginReadTxn 开启快照读事务并返回句柄与快照时间戳

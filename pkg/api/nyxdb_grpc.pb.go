@@ -425,12 +425,14 @@ var KV_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	Admin_Join_FullMethodName            = "/nyxdb.api.Admin/Join"
-	Admin_Leave_FullMethodName           = "/nyxdb.api.Admin/Leave"
-	Admin_Members_FullMethodName         = "/nyxdb.api.Admin/Members"
-	Admin_TriggerMerge_FullMethodName    = "/nyxdb.api.Admin/TriggerMerge"
-	Admin_TriggerSnapshot_FullMethodName = "/nyxdb.api.Admin/TriggerSnapshot"
-	Admin_SnapshotStatus_FullMethodName  = "/nyxdb.api.Admin/SnapshotStatus"
+	Admin_Join_FullMethodName                = "/nyxdb.api.Admin/Join"
+	Admin_Leave_FullMethodName               = "/nyxdb.api.Admin/Leave"
+	Admin_Members_FullMethodName             = "/nyxdb.api.Admin/Members"
+	Admin_TriggerMerge_FullMethodName        = "/nyxdb.api.Admin/TriggerMerge"
+	Admin_TriggerSnapshot_FullMethodName     = "/nyxdb.api.Admin/TriggerSnapshot"
+	Admin_SnapshotStatus_FullMethodName      = "/nyxdb.api.Admin/SnapshotStatus"
+	Admin_CreateRegionReplica_FullMethodName = "/nyxdb.api.Admin/CreateRegionReplica"
+	Admin_DeleteRegionReplica_FullMethodName = "/nyxdb.api.Admin/DeleteRegionReplica"
 )
 
 // AdminClient is the client API for Admin service.
@@ -443,6 +445,9 @@ type AdminClient interface {
 	TriggerMerge(ctx context.Context, in *TriggerMergeRequest, opts ...grpc.CallOption) (*TriggerMergeResponse, error)
 	TriggerSnapshot(ctx context.Context, in *TriggerSnapshotRequest, opts ...grpc.CallOption) (*TriggerSnapshotResponse, error)
 	SnapshotStatus(ctx context.Context, in *SnapshotStatusRequest, opts ...grpc.CallOption) (*SnapshotStatusResponse, error)
+	// Create/Delete a local replica for a region on this store.
+	CreateRegionReplica(ctx context.Context, in *CreateRegionReplicaRequest, opts ...grpc.CallOption) (*CreateRegionReplicaResponse, error)
+	DeleteRegionReplica(ctx context.Context, in *DeleteRegionReplicaRequest, opts ...grpc.CallOption) (*DeleteRegionReplicaResponse, error)
 }
 
 type adminClient struct {
@@ -513,6 +518,26 @@ func (c *adminClient) SnapshotStatus(ctx context.Context, in *SnapshotStatusRequ
 	return out, nil
 }
 
+func (c *adminClient) CreateRegionReplica(ctx context.Context, in *CreateRegionReplicaRequest, opts ...grpc.CallOption) (*CreateRegionReplicaResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateRegionReplicaResponse)
+	err := c.cc.Invoke(ctx, Admin_CreateRegionReplica_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminClient) DeleteRegionReplica(ctx context.Context, in *DeleteRegionReplicaRequest, opts ...grpc.CallOption) (*DeleteRegionReplicaResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteRegionReplicaResponse)
+	err := c.cc.Invoke(ctx, Admin_DeleteRegionReplica_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServer is the server API for Admin service.
 // All implementations must embed UnimplementedAdminServer
 // for forward compatibility
@@ -523,6 +548,9 @@ type AdminServer interface {
 	TriggerMerge(context.Context, *TriggerMergeRequest) (*TriggerMergeResponse, error)
 	TriggerSnapshot(context.Context, *TriggerSnapshotRequest) (*TriggerSnapshotResponse, error)
 	SnapshotStatus(context.Context, *SnapshotStatusRequest) (*SnapshotStatusResponse, error)
+	// Create/Delete a local replica for a region on this store.
+	CreateRegionReplica(context.Context, *CreateRegionReplicaRequest) (*CreateRegionReplicaResponse, error)
+	DeleteRegionReplica(context.Context, *DeleteRegionReplicaRequest) (*DeleteRegionReplicaResponse, error)
 	mustEmbedUnimplementedAdminServer()
 }
 
@@ -547,6 +575,12 @@ func (UnimplementedAdminServer) TriggerSnapshot(context.Context, *TriggerSnapsho
 }
 func (UnimplementedAdminServer) SnapshotStatus(context.Context, *SnapshotStatusRequest) (*SnapshotStatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SnapshotStatus not implemented")
+}
+func (UnimplementedAdminServer) CreateRegionReplica(context.Context, *CreateRegionReplicaRequest) (*CreateRegionReplicaResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateRegionReplica not implemented")
+}
+func (UnimplementedAdminServer) DeleteRegionReplica(context.Context, *DeleteRegionReplicaRequest) (*DeleteRegionReplicaResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeleteRegionReplica not implemented")
 }
 func (UnimplementedAdminServer) mustEmbedUnimplementedAdminServer() {}
 
@@ -669,6 +703,42 @@ func _Admin_SnapshotStatus_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Admin_CreateRegionReplica_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateRegionReplicaRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServer).CreateRegionReplica(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Admin_CreateRegionReplica_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServer).CreateRegionReplica(ctx, req.(*CreateRegionReplicaRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Admin_DeleteRegionReplica_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteRegionReplicaRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServer).DeleteRegionReplica(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Admin_DeleteRegionReplica_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServer).DeleteRegionReplica(ctx, req.(*DeleteRegionReplicaRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Admin_ServiceDesc is the grpc.ServiceDesc for Admin service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -699,6 +769,14 @@ var Admin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SnapshotStatus",
 			Handler:    _Admin_SnapshotStatus_Handler,
+		},
+		{
+			MethodName: "CreateRegionReplica",
+			Handler:    _Admin_CreateRegionReplica_Handler,
+		},
+		{
+			MethodName: "DeleteRegionReplica",
+			Handler:    _Admin_DeleteRegionReplica_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

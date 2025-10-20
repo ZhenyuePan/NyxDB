@@ -7,6 +7,8 @@ import (
 
 	"nyxdb/internal/cluster"
 	db "nyxdb/internal/layers/engine"
+	pdconv "nyxdb/internal/layers/pd"
+	regionpkg "nyxdb/internal/region"
 	api "nyxdb/pkg/api"
 
 	"google.golang.org/grpc"
@@ -30,6 +32,8 @@ type kvCluster interface {
 	LeaderAddress() string
 	TriggerSnapshot(force bool) error
 	SnapshotStatus() cluster.SnapshotStatus
+	EnsureRegionReplica(region regionpkg.Region) error
+	RemoveRegion(id regionpkg.ID) error
 }
 
 type KVService struct {
@@ -233,6 +237,33 @@ func (s *AdminService) SnapshotStatus(ctx context.Context, req *api.SnapshotStat
 		LastSnapshotSizeBytes:  st.LastSnapshotSizeBytes,
 	}
 	return resp, nil
+}
+
+func (s *AdminService) CreateRegionReplica(ctx context.Context, req *api.CreateRegionReplicaRequest) (*api.CreateRegionReplicaResponse, error) {
+	if s.cluster == nil {
+		return nil, fmt.Errorf("cluster not available")
+	}
+	if req.GetRegion() == nil {
+		return nil, status.Error(codes.InvalidArgument, "region is nil")
+	}
+	region := pdconv.ProtoToRegion(req.GetRegion())
+	if err := s.cluster.EnsureRegionReplica(region); err != nil {
+		return nil, err
+	}
+	return &api.CreateRegionReplicaResponse{}, nil
+}
+
+func (s *AdminService) DeleteRegionReplica(ctx context.Context, req *api.DeleteRegionReplicaRequest) (*api.DeleteRegionReplicaResponse, error) {
+	if s.cluster == nil {
+		return nil, fmt.Errorf("cluster not available")
+	}
+	if req.GetRegionId() == 0 {
+		return nil, status.Error(codes.InvalidArgument, "region_id is zero")
+	}
+	if err := s.cluster.RemoveRegion(regionpkg.ID(req.GetRegionId())); err != nil {
+		return nil, err
+	}
+	return &api.DeleteRegionReplicaResponse{}, nil
 }
 
 func registerKVAdminServers(s *grpc.Server, cl *cluster.Cluster) {

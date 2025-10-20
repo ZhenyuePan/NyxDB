@@ -137,6 +137,71 @@ func TestClusterRegistersRegionsWithPD(t *testing.T) {
 	}, 2*time.Second, 50*time.Millisecond)
 }
 
+func TestClusterSingleNodeMultipleRegions(t *testing.T) {
+	dir := t.TempDir()
+	opts := db.DefaultOptions
+	opts.DirPath = dir
+	opts.EnableDiagnostics = false
+	opts.ClusterConfig = &db.ClusterOptions{
+		ClusterMode:      true,
+		NodeAddress:      "127.0.0.1:9301",
+		ClusterAddresses: []string{"1@127.0.0.1:9301"},
+	}
+
+	engine, err := db.Open(opts)
+	require.NoError(t, err)
+
+	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
+	require.NoError(t, err)
+	require.NoError(t, cl.Start())
+	t.Cleanup(func() {
+		_ = cl.Stop()
+		_ = engine.Close()
+	})
+
+	require.Eventually(t, func() bool { return cl.IsLeader() }, 5*time.Second, 50*time.Millisecond)
+
+	region, err := cl.CreateStaticRegion(regionpkg.KeyRange{Start: []byte("a"), End: []byte("m")})
+	require.NoError(t, err)
+	require.NotNil(t, region)
+
+	regionBMeta := cl.RegionForKey([]byte("b"))
+	require.NotNil(t, regionBMeta)
+	require.Equal(t, region.ID, regionBMeta.ID)
+
+	regionZMeta := cl.RegionForKey([]byte("z"))
+	require.NotNil(t, regionZMeta)
+	require.Equal(t, regionmgr.DefaultRegionID, regionZMeta.ID)
+
+	require.Eventually(t, func() bool {
+		return cl.Put([]byte("b"), []byte("value-b")) == nil
+	}, 5*time.Second, 50*time.Millisecond)
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		val, err := cl.GetLinearizable(ctx, []byte("b"))
+		return err == nil && bytes.Equal(val, []byte("value-b"))
+	}, 5*time.Second, 50*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		return cl.Put([]byte("z"), []byte("value-z")) == nil
+	}, 5*time.Second, 50*time.Millisecond)
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		val, err := cl.GetLinearizable(ctx, []byte("z"))
+		return err == nil && bytes.Equal(val, []byte("value-z"))
+	}, 5*time.Second, 50*time.Millisecond)
+
+	regionB := cl.RegionForKey([]byte("b"))
+	require.NotNil(t, regionB)
+	require.Equal(t, region.ID, regionB.ID)
+
+	regionZ := cl.RegionForKey([]byte("z"))
+	require.NotNil(t, regionZ)
+	require.Equal(t, regionmgr.DefaultRegionID, regionZ.ID)
+}
+
 func TestClusterSyncRegionsFromPD(t *testing.T) {
 	dir := t.TempDir()
 	opts := db.DefaultOptions

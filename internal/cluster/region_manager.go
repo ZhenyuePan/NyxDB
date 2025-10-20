@@ -1,11 +1,16 @@
 package cluster
 
 import (
+	"context"
 	"fmt"
+	"time"
 
+	"google.golang.org/grpc"
 	regionmgr "nyxdb/internal/cluster/regions"
+	pd "nyxdb/internal/layers/pd"
 	regionpkg "nyxdb/internal/region"
 	utils "nyxdb/internal/utils"
+	api "nyxdb/pkg/api"
 )
 
 // CreateStaticRegion registers a new region with the provided key range and
@@ -40,6 +45,8 @@ func (c *Cluster) CreateStaticRegion(keyRange regionpkg.KeyRange) (*regionpkg.Re
 	if client := c.metadataClient(); client != nil {
 		c.registerRegionWithPD(client, clone)
 	}
+	// Broadcast to other members to create their local replicas (best-effort).
+	go c.broadcastCreateRegionReplica(clone)
 	return &clone, nil
 }
 
@@ -87,4 +94,64 @@ func (c *Cluster) RemoveRegion(id regionpkg.ID) error {
 		}
 	}
 	return utils.RemoveDir(regionBaseDir(c.options.DirPath, id))
+}
+
+// EnsureRegionReplica ensures the local store has a replica for the region, creating one if needed.
+func (c *Cluster) EnsureRegionReplica(region regionpkg.Region) error {
+	// Upsert region metadata
+	c.regionMgr.UpsertRegion(region)
+	if rep := c.replica(region.ID); rep != nil {
+		// Peer already exists; best-effort PD update to reflect peers.
+		if client := c.metadataClient(); client != nil {
+			c.registerRegionWithPD(client, region)
+		}
+		return nil
+	}
+	// Create local replica
+	_, err := c.createRegionReplica(region.ID, &region)
+	if err != nil {
+		return err
+	}
+	if err := c.persistRegions(); err != nil {
+		return err
+	}
+	// Best-effort PD update to include this store's peer.
+	if client := c.metadataClient(); client != nil {
+		c.registerRegionWithPD(client, region)
+	}
+	return nil
+}
+
+func (c *Cluster) broadcastCreateRegionReplica(region regionpkg.Region) {
+	c.membersMu.RLock()
+	peers := make(map[uint64]string, len(c.members))
+	for id, addr := range c.members {
+		peers[id] = addr
+	}
+	c.membersMu.RUnlock()
+	// Skip self
+	delete(peers, c.nodeID)
+	if len(peers) == 0 {
+		return
+	}
+	// Prepare payload
+	desc := pd.RegionToProto(region)
+	req := &api.CreateRegionReplicaRequest{Region: desc}
+	for _, addr := range peers {
+		go func(target string) {
+			// Best-effort dial; cluster nodeAddress may or may not match gRPC address in MVP.
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			conn, err := grpc.DialContext(ctx, target, grpc.WithInsecure(), grpc.WithBlock())
+			if err != nil {
+				fmt.Printf("broadcast create replica to %s failed: %v\n", target, err)
+				return
+			}
+			defer conn.Close()
+			client := api.NewAdminClient(conn)
+			if _, err := client.CreateRegionReplica(ctx, req); err != nil {
+				fmt.Printf("admin CreateRegionReplica to %s failed: %v\n", target, err)
+			}
+		}(addr)
+	}
 }

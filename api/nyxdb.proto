@@ -258,7 +258,22 @@ service Admin {
   rpc TriggerMerge(TriggerMergeRequest) returns (TriggerMergeResponse);
   rpc TriggerSnapshot(TriggerSnapshotRequest) returns (TriggerSnapshotResponse);
   rpc SnapshotStatus(SnapshotStatusRequest) returns (SnapshotStatusResponse);
+  // Create/Delete a local replica for a region on this store.
+  rpc CreateRegionReplica(CreateRegionReplicaRequest) returns (CreateRegionReplicaResponse);
+  rpc DeleteRegionReplica(DeleteRegionReplicaRequest) returns (DeleteRegionReplicaResponse);
 }
+
+message CreateRegionReplicaRequest {
+  RegionDescriptor region = 1;
+}
+
+message CreateRegionReplicaResponse {}
+
+message DeleteRegionReplicaRequest {
+  uint64 region_id = 1;
+}
+
+message DeleteRegionReplicaResponse {}
 
 service PD {
   rpc StoreHeartbeat(StoreHeartbeatRequest) returns (StoreHeartbeatResponse);
