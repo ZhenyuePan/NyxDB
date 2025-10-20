@@ -19,6 +19,7 @@ func TestServiceHandleHeartbeat(t *testing.T) {
 			{
 				Region:  regionpkg.Region{ID: 1},
 				StoreID: 1,
+				PeerID:  0x0000000100000001,
 				Role:    regionpkg.Voter,
 			},
 		},
@@ -41,6 +42,14 @@ func TestServiceHandleHeartbeat(t *testing.T) {
 	if len(all) != 1 {
 		t.Fatalf("expected 1 store, got %d", len(all))
 	}
+
+	snapshot, ok := svc.RegionSnapshot(1)
+	if !ok {
+		t.Fatalf("region snapshot missing")
+	}
+	if snapshot.Region.ID != 1 || len(snapshot.Peers) != 1 || snapshot.Peers[0].PeerID == 0 {
+		t.Fatalf("unexpected region snapshot: %+v", snapshot)
+	}
 }
 
 func TestPersistentServiceBootstrap(t *testing.T) {
@@ -55,7 +64,7 @@ func TestPersistentServiceBootstrap(t *testing.T) {
 		Address:   "10.0.0.1:10001",
 		Timestamp: time.Now(),
 		Regions: []pd.RegionHeartbeat{
-			{Region: regionpkg.Region{ID: 5}, StoreID: 42, Role: regionpkg.Voter},
+			{Region: regionpkg.Region{ID: 5}, StoreID: 42, PeerID: 0x000000050000002a, Role: regionpkg.Voter},
 		},
 	}
 	svc.HandleHeartbeat(hb)
@@ -79,5 +88,13 @@ func TestPersistentServiceBootstrap(t *testing.T) {
 	}
 	if len(stored.Regions) != 1 || stored.Regions[0].Region.ID != 5 {
 		t.Fatalf("unexpected regions: %+v", stored.Regions)
+	}
+
+	snapshot, ok := svc2.RegionSnapshot(5)
+	if !ok {
+		t.Fatalf("expected region snapshot after restart")
+	}
+	if len(snapshot.Peers) != 1 || snapshot.Peers[0].StoreID != 42 {
+		t.Fatalf("unexpected region snapshot: %+v", snapshot)
 	}
 }

@@ -51,6 +51,7 @@ func (c *Cluster) createRegionReplica(id regionpkg.ID, region *regionpkg.Region)
 		PeerID:  peerID,
 	}
 	c.regionMgr.RegisterReplica(replica)
+	c.regionMgr.UpsertPeer(id, regionpkg.Peer{ID: peerID, StoreID: c.nodeID, Role: regionpkg.Voter})
 	c.router.Register(peerID, replica)
 	if c.isStarted() {
 		replica.Node.Start(c.commitC, c.errorC)

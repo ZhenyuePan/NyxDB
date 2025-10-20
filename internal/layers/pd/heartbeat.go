@@ -10,6 +10,7 @@ import (
 type RegionHeartbeat struct {
 	Region       regionpkg.Region
 	StoreID      uint64
+	PeerID       uint64
 	Role         regionpkg.PeerRole
 	AppliedIndex uint64
 }

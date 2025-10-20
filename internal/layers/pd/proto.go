@@ -25,6 +25,7 @@ func ProtoToStoreHeartbeat(p *api.StoreHeartbeatProto) (StoreHeartbeat, error) {
 		hb.Regions = append(hb.Regions, RegionHeartbeat{
 			Region:       regionMeta,
 			StoreID:      r.GetStoreId(),
+			PeerID:       r.GetPeerId(),
 			Role:         protoRoleToPeerRole(r.GetRole()),
 			AppliedIndex: r.GetAppliedIndex(),
 		})
@@ -38,7 +39,8 @@ func StoreHeartbeatToProto(hb StoreHeartbeat) *api.StoreHeartbeatProto {
 		regions = append(regions, &api.RegionReplicaDescriptor{
 			RegionId:     uint64(r.Region.ID),
 			StoreId:      r.StoreID,
-			Role:         peerRoleToProto(r.Role),
+			PeerId:       r.PeerID,
+			Role:         PeerRoleToProto(r.Role),
 			AppliedIndex: r.AppliedIndex,
 			Region:       RegionToProto(r.Region),
 		})
@@ -62,7 +64,7 @@ func protoRoleToPeerRole(role api.RegionRole) regionpkg.PeerRole {
 	}
 }
 
-func peerRoleToProto(role regionpkg.PeerRole) api.RegionRole {
+func PeerRoleToProto(role regionpkg.PeerRole) api.RegionRole {
 	switch role {
 	case regionpkg.Voter:
 		return api.RegionRole_REGION_ROLE_VOTER

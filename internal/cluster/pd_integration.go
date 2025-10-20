@@ -88,6 +88,7 @@ func (c *Cluster) sendPDHeartbeat() {
 		hb.Regions = append(hb.Regions, pd.RegionHeartbeat{
 			Region:       r,
 			StoreID:      c.nodeID,
+			PeerID:       peerIDFor(r.ID, c.nodeID),
 			Role:         regionpkg.Voter,
 			AppliedIndex: applied,
 		})

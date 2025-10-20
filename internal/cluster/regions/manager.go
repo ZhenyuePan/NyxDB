@@ -47,35 +47,35 @@ func NewManager() *Manager {
 
 // Load replaces the in-memory regions with the provided snapshot.
 func (m *Manager) Load(regions []regionpkg.Region, next regionpkg.ID) {
-    m.mu.Lock()
-    defer m.mu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-    m.regions = make(map[regionpkg.ID]*regionpkg.Region)
-    m.replicas = make(map[regionpkg.ID]*Replica)
-    maxID := regionpkg.ID(0)
-    for i := range regions {
-        region := regions[i].Clone()
-        m.regions[region.ID] = &region
-        if region.ID > maxID {
-            maxID = region.ID
-        }
-    }
-    if len(m.regions) == 0 {
-        def := &regionpkg.Region{
-            ID:    DefaultRegionID,
-            Range: regionpkg.KeyRange{},
-            Epoch: regionpkg.Epoch{Version: 1, ConfVersion: 1},
-            State: regionpkg.StateActive,
-        }
-        m.regions[DefaultRegionID] = def
-        m.nextID = DefaultRegionID + 1
-        return
-    }
-    if next <= maxID {
-        m.nextID = maxID + 1
-    } else {
-        m.nextID = next
-    }
+	m.regions = make(map[regionpkg.ID]*regionpkg.Region)
+	m.replicas = make(map[regionpkg.ID]*Replica)
+	maxID := regionpkg.ID(0)
+	for i := range regions {
+		region := regions[i].Clone()
+		m.regions[region.ID] = &region
+		if region.ID > maxID {
+			maxID = region.ID
+		}
+	}
+	if len(m.regions) == 0 {
+		def := &regionpkg.Region{
+			ID:    DefaultRegionID,
+			Range: regionpkg.KeyRange{},
+			Epoch: regionpkg.Epoch{Version: 1, ConfVersion: 1},
+			State: regionpkg.StateActive,
+		}
+		m.regions[DefaultRegionID] = def
+		m.nextID = DefaultRegionID + 1
+		return
+	}
+	if next <= maxID {
+		m.nextID = maxID + 1
+	} else {
+		m.nextID = next
+	}
 }
 
 // Regions returns a snapshot of regions ordered by start key.
@@ -142,6 +142,30 @@ func (m *Manager) RegisterReplica(rep *Replica) {
 	m.mu.Unlock()
 }
 
+// UpsertPeer records or updates a peer entry for the region.
+func (m *Manager) UpsertPeer(regionID regionpkg.ID, peer regionpkg.Peer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	region := m.regions[regionID]
+	if region == nil {
+		return
+	}
+	replaced := false
+	for i := range region.Peers {
+		if region.Peers[i].StoreID == peer.StoreID {
+			region.Peers[i] = peer
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		region.Peers = append(region.Peers, peer)
+	}
+	if region.Leader == 0 {
+		region.Leader = peer.ID
+	}
+}
+
 // Replica returns the replica for region id.
 func (m *Manager) Replica(id regionpkg.ID) *Replica {
 	m.mu.RLock()
@@ -179,14 +203,14 @@ func (m *Manager) ResetReplicas() {
 
 // Snapshot returns a copy of region metadata and the next available id.
 func (m *Manager) Snapshot() ([]regionpkg.Region, regionpkg.ID) {
-    m.mu.RLock()
-    defer m.mu.RUnlock()
-    regions := make([]regionpkg.Region, 0, len(m.regions))
-    for _, r := range m.regions {
-        regions = append(regions, r.Clone())
-    }
-    sort.Slice(regions, func(i, j int) bool {
-        return regions[i].ID < regions[j].ID
-    })
-    return regions, m.nextID
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	regions := make([]regionpkg.Region, 0, len(m.regions))
+	for _, r := range m.regions {
+		regions = append(regions, r.Clone())
+	}
+	sort.Slice(regions, func(i, j int) bool {
+		return regions[i].ID < regions[j].ID
+	})
+	return regions, m.nextID
 }

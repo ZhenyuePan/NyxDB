@@ -34,6 +34,7 @@ func (c *Cluster) CreateStaticRegion(keyRange regionpkg.KeyRange) (*regionpkg.Re
 		c.regionMgr.RemoveRegion(region.ID)
 		return nil, err
 	}
+	c.sendPDHeartbeat()
 
 	clone := replica.Region.Clone()
 	return &clone, nil
@@ -70,5 +71,6 @@ func (c *Cluster) RemoveRegion(id regionpkg.ID) error {
 	if err := c.persistRegions(); err != nil {
 		return err
 	}
+	c.sendPDHeartbeat()
 	return utils.RemoveDir(regionBaseDir(c.options.DirPath, id))
 }

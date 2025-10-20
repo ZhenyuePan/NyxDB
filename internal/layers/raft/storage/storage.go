@@ -35,6 +35,13 @@ type Storage struct {
 	snapshot  raftpb.Snapshot
 }
 
+func (s *Storage) currentDB() (*pebble.DB, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("raft storage closed")
+	}
+	return s.db, nil
+}
+
 // New opens / creates a Pebble-backed raft storage under dir.
 func New(dir string) (*Storage, error) {
 	if dir == "" {
@@ -111,7 +118,11 @@ func (s *Storage) loadProto(key []byte, msg proto.Message) error {
 	if msg == nil {
 		return nil
 	}
-	val, closer, err := s.db.Get(key)
+	db, err := s.currentDB()
+	if err != nil {
+		return err
+	}
+	val, closer, err := db.Get(key)
 	if errors.Is(err, pebble.ErrNotFound) {
 		return nil
 	}
@@ -123,7 +134,11 @@ func (s *Storage) loadProto(key []byte, msg proto.Message) error {
 }
 
 func (s *Storage) loadUint64(key []byte) (uint64, error) {
-	val, closer, err := s.db.Get(key)
+	db, err := s.currentDB()
+	if err != nil {
+		return 0, err
+	}
+	val, closer, err := db.Get(key)
 	if err != nil {
 		return 0, err
 	}
@@ -137,7 +152,11 @@ func (s *Storage) loadUint64(key []byte) (uint64, error) {
 func (s *Storage) persistUint64(key []byte, value uint64) error {
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], value)
-	return s.db.Set(key, buf[:], syncWrite)
+	db, err := s.currentDB()
+	if err != nil {
+		return err
+	}
+	return db.Set(key, buf[:], syncWrite)
 }
 
 func (s *Storage) persistProto(key []byte, msg proto.Message) error {
@@ -145,7 +164,11 @@ func (s *Storage) persistProto(key []byte, msg proto.Message) error {
 	if err != nil {
 		return err
 	}
-	return s.db.Set(key, data, syncWrite)
+	db, err := s.currentDB()
+	if err != nil {
+		return err
+	}
+	return db.Set(key, data, syncWrite)
 }
 
 func entryKey(index uint64) []byte {
@@ -160,7 +183,11 @@ func entryIndex(key []byte) uint64 {
 }
 
 func (s *Storage) refreshBoundsLocked() error {
-	iter, err := s.db.NewIter(&pebble.IterOptions{
+	db, err := s.currentDB()
+	if err != nil {
+		return err
+	}
+	iter, err := db.NewIter(&pebble.IterOptions{
 		LowerBound: entryPrefix,
 		UpperBound: entryUpper,
 	})

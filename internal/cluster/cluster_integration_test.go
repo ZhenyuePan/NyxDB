@@ -15,6 +15,7 @@ import (
 	db "nyxdb/internal/layers/engine"
 	pd "nyxdb/internal/layers/pd"
 	rafttransport "nyxdb/internal/layers/raft/transport"
+	replication "nyxdb/internal/layers/txn/replication"
 	regionpkg "nyxdb/internal/region"
 
 	"github.com/stretchr/testify/require"
@@ -380,6 +381,73 @@ func TestClusterPDHeartbeatWithRegions(t *testing.T) {
 		seen = append(seen, r.Region.ID)
 	}
 	require.ElementsMatch(t, []regionpkg.ID{regionmgr.DefaultRegionID, region.ID}, seen)
+
+	regionSnaps := svc.RegionsSnapshot()
+	require.GreaterOrEqual(t, len(regionSnaps), 2)
+	snapshot, ok := svc.RegionSnapshot(uint64(region.ID))
+	require.True(t, ok)
+	require.Equal(t, region.ID, snapshot.Region.ID)
+	require.NotEmpty(t, snapshot.Peers)
+
+	byKey, ok := svc.RegionByKey([]byte("m"))
+	require.True(t, ok)
+	require.Equal(t, region.ID, byKey.Region.ID)
+}
+
+func TestClusterMultiRegionRouting(t *testing.T) {
+	dir := t.TempDir()
+	opts := db.DefaultOptions
+	opts.DirPath = dir
+	opts.EnableDiagnostics = false
+	opts.ClusterConfig = &db.ClusterOptions{
+		ClusterMode:      true,
+		NodeAddress:      "127.0.0.1:29001",
+		ClusterAddresses: []string{"1@127.0.0.1:29001"},
+	}
+
+	engine, err := db.Open(opts)
+	require.NoError(t, err)
+
+	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
+	require.NoError(t, err)
+	require.NoError(t, cl.Start())
+	defer func() { _ = cl.Stop() }()
+
+	require.Eventually(t, func() bool { return cl.IsLeader() }, 5*time.Second, 50*time.Millisecond)
+
+	region, err := cl.CreateStaticRegion(regionpkg.KeyRange{Start: []byte("m")})
+	require.NoError(t, err)
+	replica := cl.replica(region.ID)
+	require.NotNil(t, replica)
+
+	require.Eventually(t, func() bool {
+		return cl.router.RegionByPeer(replica.PeerID) == region.ID
+	}, 5*time.Second, 50*time.Millisecond)
+
+	commitTs := cl.allocateCommitTs()
+	cmd := &replication.Command{
+		CommitTs: commitTs,
+		Operations: []replication.Operation{
+			{Key: []byte("multi-region-key"), Value: []byte("value"), Type: replication.OpPut},
+		},
+	}
+	data, err := cmd.Marshal()
+	require.NoError(t, err)
+	require.NoError(t, replica.Node.Propose(data))
+
+	require.Eventually(t, func() bool {
+		val, err := cl.Get([]byte("multi-region-key"))
+		return err == nil && bytes.Equal(val, []byte("value"))
+	}, 5*time.Second, 50*time.Millisecond)
+
+	regionsFile := filepath.Join(opts.DirPath, "cluster", regionsFileName)
+	require.Eventually(t, func() bool {
+		content, err := os.ReadFile(regionsFile)
+		if err != nil {
+			return false
+		}
+		return bytes.Contains(content, []byte("\"id\": 2"))
+	}, 5*time.Second, 50*time.Millisecond)
 }
 
 func TestClusterDiagnostics(t *testing.T) {
