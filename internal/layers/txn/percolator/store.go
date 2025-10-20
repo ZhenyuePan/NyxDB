@@ -13,6 +13,8 @@ type TSO interface {
 // Store applies committed mutations with a specific commit timestamp.
 type Store interface {
 	Apply(commitTs uint64, ops []db.ReplicatedOp) error
+	LatestCommitTs(key []byte) (uint64, bool, error)
+	GetValue(key []byte, readTs uint64) ([]byte, bool, error)
 }
 
 // EngineStore adapts the local engine DB to the transaction Store interface.
@@ -28,6 +30,14 @@ func NewEngineStore(database *db.DB) *EngineStore {
 // Apply commits the replicated operations using the provided commit timestamp.
 func (s *EngineStore) Apply(commitTs uint64, ops []db.ReplicatedOp) error {
 	return s.db.ApplyReplicated(commitTs, ops)
+}
+
+func (s *EngineStore) LatestCommitTs(key []byte) (uint64, bool, error) {
+	return s.db.LatestCommitTs(key)
+}
+
+func (s *EngineStore) GetValue(key []byte, readTs uint64) ([]byte, bool, error) {
+	return s.db.GetVersion(key, readTs)
 }
 
 // ServiceTSO adapts a PD service to the TSO interface.

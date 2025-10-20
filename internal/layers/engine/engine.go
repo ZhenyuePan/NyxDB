@@ -648,6 +648,33 @@ func (db *DB) MaxCommittedTs() uint64 {
 	return db.maxCommittedTs
 }
 
+// LatestCommitTs returns the latest committed version timestamp for a key.
+// The boolean result indicates whether a committed version exists.
+func (db *DB) LatestCommitTs(key []byte) (uint64, bool, error) {
+	pos := db.index.Get(key)
+	if pos == nil {
+		return 0, false, nil
+	}
+	entry, err := db.readLogEntry(pos)
+	if err != nil {
+		return 0, false, err
+	}
+	return entry.Meta.CommitTs, true, nil
+}
+
+// GetVersion returns the value of key visible at readTs.
+// The boolean result indicates whether a visible version exists.
+func (db *DB) GetVersion(key []byte, readTs uint64) ([]byte, bool, error) {
+	value, err := db.getValueForReadTs(key, readTs)
+	if err != nil {
+		if errors.Is(err, ErrKeyNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return value, true, nil
+}
+
 // 追加写数据到活跃文件中
 func (db *DB) appendLogEntry(entry *data.LogEntry) (*data.LogRecordPos, error) {
 	// 判断当前活跃数据文件是否存在，因为数据库在没有写入的时候是没有文件生成的
