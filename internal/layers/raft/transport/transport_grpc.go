@@ -84,7 +84,13 @@ func (t *GRPCTransport) Send(to uint64, messages []raftpb.Message) error {
 		if err != nil {
 			return err
 		}
-		if err := cs.stream.Send(&api.RaftMessage{To: to, Message: data}); err != nil {
+		raftMsg := &api.RaftMessage{
+			RegionId:   msg.To >> 32,
+			ToPeerId:   msg.To,
+			FromPeerId: msg.From,
+			Message:    data,
+		}
+		if err := cs.stream.Send(raftMsg); err != nil {
 			t.closeStream(to)
 			return err
 		}
@@ -160,6 +166,12 @@ func (s *GRPCTransportServer) Send(stream api.RaftTransport_SendServer) error {
 		var m raftpb.Message
 		if err := m.Unmarshal(msg.Message); err != nil {
 			return err
+		}
+		if msg.ToPeerId != 0 {
+			m.To = msg.ToPeerId
+		}
+		if msg.FromPeerId != 0 {
+			m.From = msg.FromPeerId
 		}
 		if err := s.node.Step(stream.Context(), m); err != nil {
 			return err

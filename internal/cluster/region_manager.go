@@ -23,6 +23,17 @@ func (c *Cluster) CreateStaticRegion(keyRange regionpkg.KeyRange) (*regionpkg.Re
 		c.regionMgr.RemoveRegion(region.ID)
 		return nil, err
 	}
+	if err := c.persistRegions(); err != nil {
+		if replica.Node != nil {
+			replica.Node.Stop()
+		}
+		if replica.Storage != nil {
+			_ = replica.Storage.Close()
+		}
+		c.router.Unregister(replica.PeerID)
+		c.regionMgr.RemoveRegion(region.ID)
+		return nil, err
+	}
 
 	clone := replica.Region.Clone()
 	return &clone, nil
@@ -56,5 +67,8 @@ func (c *Cluster) RemoveRegion(id regionpkg.ID) error {
 		return err
 	}
 	c.router.Unregister(rep.PeerID)
+	if err := c.persistRegions(); err != nil {
+		return err
+	}
 	return utils.RemoveDir(regionBaseDir(c.options.DirPath, id))
 }

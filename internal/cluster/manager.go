@@ -57,6 +57,7 @@ type Cluster struct {
 	members     map[uint64]string // nodeID -> address
 	membersMu   sync.RWMutex
 	memberStore *memberStore
+	regionStore *regionStore
 
 	commitMu     sync.Mutex
 	nextCommitTs uint64
@@ -103,7 +104,7 @@ type Cluster struct {
 	diagnosticsMu        sync.RWMutex
 	diagnosticsObservers []func(Diagnostics)
 
-	regionMgr           *regionmgr.Manager
+    regionMgr           *regionmgr.Manager
 	lifecycleMu         sync.RWMutex
 	started             bool
 	pdClient            pd.Heartbeater
@@ -255,6 +256,18 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		return nil, err
 	}
 	cluster.memberStore = store
+	regionStore, err := newRegionStore(memberDir)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	cluster.regionStore = regionStore
+	if regions, nextID, err := regionStore.Load(); err != nil {
+		cancel()
+		return nil, err
+	} else if len(regions) > 0 {
+		cluster.regionMgr.Load(regions, nextID)
+	}
 
 	if err := cluster.restoreMembers(); err != nil {
 		cancel()
@@ -269,17 +282,26 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		cluster.membersMu.Unlock()
 	}
 
-	defaultRegion := cluster.regionMgr.Region(regionmgr.DefaultRegionID)
-	replica, err := cluster.createRegionReplica(regionmgr.DefaultRegionID, defaultRegion)
-	if err != nil {
+	regions := cluster.regionMgr.Regions()
+	for _, meta := range regions {
+		region := meta.Clone()
+		replica, err := cluster.createRegionReplica(region.ID, &region)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		if region.ID == regionmgr.DefaultRegionID {
+			cluster.storage = replica.Storage
+			cluster.raftNode = replica.Node
+			if snap, err := cluster.storage.Snapshot(); err == nil {
+				cluster.lastSnapshotIndex = snap.Metadata.Index
+			}
+		}
+	}
+	if err := cluster.persistRegions(); err != nil {
 		cancel()
 		return nil, err
 	}
-	cluster.storage = replica.Storage
-	if snap, err := cluster.storage.Snapshot(); err == nil {
-		cluster.lastSnapshotIndex = snap.Metadata.Index
-	}
-	cluster.raftNode = replica.Node
 
 	return cluster, nil
 }
@@ -884,6 +906,14 @@ func (c *Cluster) persistMembers() error {
 	}
 	c.membersMu.RUnlock()
 	return c.memberStore.Save(snapshot)
+}
+
+func (c *Cluster) persistRegions() error {
+    if c.regionStore == nil {
+        return nil
+    }
+    regions, next := c.regionMgr.Snapshot()
+    return c.regionStore.Save(regions, next)
 }
 
 var (

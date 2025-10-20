@@ -167,8 +167,10 @@ message SnapshotPayload {
 }
 
 message RaftMessage {
-  uint64 to = 1;
-  bytes message = 2;
+  uint64 region_id = 1;
+  uint64 to_peer_id = 2;
+  uint64 from_peer_id = 3;
+  bytes message = 4;
 }
 
 message RaftAck {}
