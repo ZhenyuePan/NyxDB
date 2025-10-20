@@ -1,17 +1,17 @@
 package node
 
 import (
-	"context"
-	"encoding/binary"
-	"sync"
-	"sync/atomic"
-	"time"
+    "context"
+    "encoding/binary"
+    "sync"
+    "sync/atomic"
+    "time"
 
-	"github.com/gogo/protobuf/proto"
-	"go.etcd.io/etcd/raft/v3"
-	"go.etcd.io/etcd/raft/v3/raftpb"
-	rafttransport "nyxdb/internal/layers/raft/transport"
-	regionpkg "nyxdb/internal/region"
+    "github.com/gogo/protobuf/proto"
+    "go.etcd.io/etcd/raft/v3"
+    "go.etcd.io/etcd/raft/v3/raftpb"
+    regionpkg "nyxdb/internal/region"
+    rafttransport "nyxdb/internal/layers/raft/transport"
 )
 
 // WritableStorage augments raft.Storage with the write-side primitives the node expects.
