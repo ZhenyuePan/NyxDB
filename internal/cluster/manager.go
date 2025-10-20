@@ -34,6 +34,14 @@ const (
 	defaultDiagnosticsInterval    = 30 * time.Second
 )
 
+func peerIDFor(regionID regionpkg.ID, storeID uint64) uint64 {
+	return (uint64(regionID) << 32) | storeID
+}
+
+func storeIDFromPeer(peerID uint64) uint64 {
+	return peerID & 0xffffffff
+}
+
 // Cluster 代表一个分布式存储集群
 type Cluster struct {
 	nodeID       uint64
@@ -42,6 +50,7 @@ type Cluster struct {
 	raftNode     *raftnode.Node
 	transport    rafttransport.Transport
 	storage      *raftstorage.Storage
+	router       *raftRouter
 	storeAddress string
 
 	// 集群成员管理
@@ -171,6 +180,7 @@ func NewClusterWithTransport(nodeID uint64, options db.Options, database *db.DB,
 		cancel:              cancel,
 		nextCommitTs:        database.MaxCommittedTs(),
 		transport:           transport,
+		router:              newRaftRouter(),
 		readTxns:            make(map[string]*readTxnEntry),
 		readTxnTTL:          time.Minute,
 		diagnosticsEnabled:  options.EnableDiagnostics,
@@ -335,9 +345,13 @@ func (c *Cluster) Stop() error {
 		if rep.Node != nil {
 			rep.Node.Stop()
 		}
+		if rep.Storage != nil {
+			_ = rep.Storage.Close()
+		}
 	}
 	c.raftNode = nil
 	c.regionMgr.ResetReplicas()
+	c.router.Reset()
 
 	return c.db.Close()
 }
@@ -396,6 +410,11 @@ func (c *Cluster) Delete(key []byte) error {
 
 func (c *Cluster) RaftNode() *raftnode.Node {
 	return c.raftNode
+}
+
+// RaftRouter exposes the raft message router for transport servers.
+func (c *Cluster) RaftRouter() *raftRouter {
+	return c.router
 }
 
 // Get 从本地数据库获取数据
@@ -471,10 +490,12 @@ func (c *Cluster) IsLeader() bool {
 // AddMember 添加新成员到集群
 func (c *Cluster) AddMember(nodeID uint64, address string) error {
 	// 构造配置变更命令
+	peerID := peerIDFor(regionmgr.DefaultRegionID, nodeID)
+	contextPayload := fmt.Sprintf("%d|%s", nodeID, address)
 	cc := raftpb.ConfChange{
 		Type:    raftpb.ConfChangeAddNode,
-		NodeID:  nodeID,
-		Context: []byte(address),
+		NodeID:  peerID,
+		Context: []byte(contextPayload),
 	}
 
 	// 通过RAFT提交配置变更
@@ -484,9 +505,12 @@ func (c *Cluster) AddMember(nodeID uint64, address string) error {
 // RemoveMember 从集群中移除成员
 func (c *Cluster) RemoveMember(nodeID uint64) error {
 	// 构造配置变更命令
+	peerID := peerIDFor(regionmgr.DefaultRegionID, nodeID)
+	ctx := strconv.FormatUint(nodeID, 10)
 	cc := raftpb.ConfChange{
 		Type:   raftpb.ConfChangeRemoveNode,
-		NodeID: nodeID,
+		NodeID: peerID,
+		Context: []byte(ctx),
 	}
 
 	// 通过RAFT提交配置变更
@@ -566,7 +590,7 @@ func (c *Cluster) handleErrors() {
 }
 
 // buildRaftPeers 根据配置构建RAFT peers
-func (c *Cluster) buildRaftPeers() []etcdraft.Peer {
+func (c *Cluster) buildRaftPeers(regionID regionpkg.ID) []etcdraft.Peer {
 	c.membersMu.Lock()
 	defer c.membersMu.Unlock()
 
@@ -579,9 +603,10 @@ func (c *Cluster) buildRaftPeers() []etcdraft.Peer {
 	}
 
 	peers := make([]etcdraft.Peer, 0, len(c.members))
-	for id, addr := range c.members {
-		peers = append(peers, etcdraft.Peer{ID: id})
-		_ = c.transport.AddMember(id, []string{addr})
+	for storeID, addr := range c.members {
+		peerID := peerIDFor(regionID, storeID)
+		peers = append(peers, etcdraft.Peer{ID: peerID})
+		_ = c.transport.AddMember(peerID, []string{addr})
 	}
 	return peers
 }
@@ -739,22 +764,40 @@ func (c *Cluster) TriggerSnapshot(force bool) error {
 }
 
 func (c *Cluster) applyConfChange(cc *raftpb.ConfChange, cs *raftpb.ConfState) {
+	storeID := storeIDFromPeer(cc.NodeID)
 	switch cc.Type {
 	case raftpb.ConfChangeAddNode, raftpb.ConfChangeAddLearnerNode:
 		addr := string(cc.Context)
+		if parts := strings.SplitN(addr, "|", 2); len(parts) == 2 {
+			if id, err := strconv.ParseUint(parts[0], 10, 64); err == nil {
+				storeID = id
+			}
+			addr = parts[1]
+		}
 		c.membersMu.Lock()
-		c.members[cc.NodeID] = addr
+		c.members[storeID] = addr
 		c.membersMu.Unlock()
 		_ = c.transport.AddMember(cc.NodeID, []string{addr})
 	case raftpb.ConfChangeRemoveNode:
 		c.membersMu.Lock()
-		delete(c.members, cc.NodeID)
+		if len(cc.Context) > 0 {
+			if id, err := strconv.ParseUint(string(cc.Context), 10, 64); err == nil {
+				storeID = id
+			}
+		}
+		delete(c.members, storeID)
 		c.membersMu.Unlock()
 		_ = c.transport.RemoveMember(cc.NodeID)
 	case raftpb.ConfChangeUpdateNode:
 		addr := string(cc.Context)
+		if parts := strings.SplitN(addr, "|", 2); len(parts) == 2 {
+			if id, err := strconv.ParseUint(parts[0], 10, 64); err == nil {
+				storeID = id
+			}
+			addr = parts[1]
+		}
 		c.membersMu.Lock()
-		c.members[cc.NodeID] = addr
+		c.members[storeID] = addr
 		c.membersMu.Unlock()
 		_ = c.transport.AddMember(cc.NodeID, []string{addr})
 	}

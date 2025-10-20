@@ -17,6 +17,7 @@ type Replica struct {
 	Region  *regionpkg.Region
 	Node    *raftnode.Node
 	Storage *raftstorage.Storage
+	PeerID  uint64
 }
 
 // Manager maintains region metadata and replicas for a store.

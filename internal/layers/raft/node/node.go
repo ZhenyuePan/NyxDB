@@ -11,6 +11,7 @@ import (
 	"go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
 	rafttransport "nyxdb/internal/layers/raft/transport"
+	regionpkg "nyxdb/internal/region"
 )
 
 // WritableStorage augments raft.Storage with the write-side primitives the node expects.
@@ -28,6 +29,7 @@ type Node struct {
 	config    *raft.Config
 	transport rafttransport.Transport
 	storage   WritableStorage
+	regionID  regionpkg.ID
 
 	// 状态相关
 	mu      sync.RWMutex
@@ -56,6 +58,7 @@ type Commit struct {
 	ConfChange *raftpb.ConfChange
 	ConfState  *raftpb.ConfState
 	Snapshot   *raftpb.Snapshot
+	RegionID   regionpkg.ID
 }
 
 // NodeConfig RAFT节点配置
@@ -67,6 +70,7 @@ type NodeConfig struct {
 	TickMs        uint64
 	ElectionTick  int
 	HeartbeatTick int
+	RegionID      regionpkg.ID
 }
 
 // NewNode 创建新的RAFT节点
@@ -97,6 +101,7 @@ func NewNode(config *NodeConfig) *Node {
 		config:      raftConfig,
 		transport:   nodeTransport,
 		storage:     config.Storage,
+		regionID:    config.RegionID,
 		proposeC:    make(chan []byte, 100),
 		confChangeC: make(chan raftpb.ConfChange),
 		ctx:         ctx,
@@ -224,9 +229,10 @@ func (n *Node) applyCommits(committedEntries []raftpb.Entry) {
 		case raftpb.EntryNormal:
 			if len(entry.Data) > 0 {
 				commit := &Commit{
-					Data:  entry.Data,
-					Index: entry.Index,
-					Term:  entry.Term,
+					Data:     entry.Data,
+					Index:    entry.Index,
+					Term:     entry.Term,
+					RegionID: n.regionID,
 				}
 				select {
 				case n.commitC <- commit:
@@ -253,6 +259,7 @@ func (n *Node) applyCommits(committedEntries []raftpb.Entry) {
 				Term:       entry.Term,
 				ConfChange: &ccCopy,
 				ConfState:  stateCopy,
+				RegionID:   n.regionID,
 			}
 			select {
 			case n.commitC <- commit:
@@ -277,7 +284,7 @@ func (n *Node) applySnapshot(snapshot raftpb.Snapshot) {
 	n.applied = snapshot.Metadata.Index
 	if n.commitC != nil {
 		snapCopy := snapshot
-		commit := &Commit{Snapshot: &snapCopy}
+		commit := &Commit{Snapshot: &snapCopy, RegionID: n.regionID}
 		select {
 		case n.commitC <- commit:
 		case <-n.ctx.Done():

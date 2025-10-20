@@ -28,9 +28,11 @@ func (c *Cluster) createRegionReplica(id regionpkg.ID, region *regionpkg.Region)
 		return nil, err
 	}
 
+	peerID := peerIDFor(id, c.nodeID)
 	raftConfig := &raftnode.NodeConfig{
-		ID:            c.nodeID,
-		Cluster:       c.buildRaftPeers(),
+		ID:            peerID,
+		RegionID:      id,
+		Cluster:       c.buildRaftPeers(id),
 		Storage:       storage,
 		Transport:     c.transport,
 		ElectionTick:  10,
@@ -46,8 +48,10 @@ func (c *Cluster) createRegionReplica(id regionpkg.ID, region *regionpkg.Region)
 		Region:  region,
 		Node:    node,
 		Storage: storage,
+		PeerID:  peerID,
 	}
 	c.regionMgr.RegisterReplica(replica)
+	c.router.Register(peerID, replica)
 	if c.isStarted() {
 		replica.Node.Start(c.commitC, c.errorC)
 	}

@@ -55,5 +55,6 @@ func (c *Cluster) RemoveRegion(id regionpkg.ID) error {
 	if err := rep.Storage.Close(); err != nil {
 		return err
 	}
+	c.router.Unregister(rep.PeerID)
 	return utils.RemoveDir(regionBaseDir(c.options.DirPath, id))
 }

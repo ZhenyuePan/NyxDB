@@ -477,10 +477,11 @@ func (n *chaosNetwork) setDelay(d time.Duration) {
 }
 
 func (n *chaosNetwork) send(from, to uint64, messages []raftpb.Message) error {
+	storeID := storeIDFromPeer(to)
 	n.mu.RLock()
-	cl := n.nodes[to]
+	cl := n.nodes[storeID]
 	delay := n.delay
-	_, blocked := n.partitions[pairKey(from, to)]
+	_, blocked := n.partitions[pairKey(from, storeID)]
 	n.mu.RUnlock()
 
 	if blocked || cl == nil {
@@ -492,6 +493,12 @@ func (n *chaosNetwork) send(from, to uint64, messages []raftpb.Message) error {
 	}
 
 	for _, msg := range messages {
+		if router := cl.RaftRouter(); router != nil {
+			if err := router.Step(context.Background(), msg); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := cl.raftNode.Step(context.Background(), msg); err != nil {
 			return err
 		}

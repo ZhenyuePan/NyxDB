@@ -42,6 +42,7 @@ func TestStorageAppendAndPersist(t *testing.T) {
 
 	require.NoError(t, st.SetHardState(raftpb.HardState{Term: 2, Commit: 3}))
 
+	require.NoError(t, st.Close())
 	st2, err := raftstorage.New(dir)
 	require.NoError(t, err)
 
@@ -54,6 +55,7 @@ func TestStorageAppendAndPersist(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got2, 2)
 	require.Equal(t, []byte("e2"), got2[0].Data)
+	require.NoError(t, st2.Close())
 }
 
 func TestStorageSnapshotAndCompaction(t *testing.T) {
@@ -89,12 +91,14 @@ func TestStorageSnapshotAndCompaction(t *testing.T) {
 	require.Len(t, entries, 2)
 	require.Equal(t, []byte("v7"), entries[0].Data)
 
+	require.NoError(t, st.Close())
 	st2, err := raftstorage.New(dir)
 	require.NoError(t, err)
 
 	first2, err := st2.FirstIndex()
 	require.NoError(t, err)
 	require.Equal(t, uint64(7), first2)
+	require.NoError(t, st2.Close())
 }
 
 func TestStorageFilesCreated(t *testing.T) {
@@ -103,6 +107,7 @@ func TestStorageFilesCreated(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, st.SetHardState(raftpb.HardState{Term: 1}))
 
-	_, err = os.Stat(filepath.Join(dir, "raft_state.bin"))
+	_, err = os.Stat(filepath.Join(dir, "pebble", "CURRENT"))
 	require.NoError(t, err)
+	require.NoError(t, st.Close())
 }
