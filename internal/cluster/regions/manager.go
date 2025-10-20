@@ -116,6 +116,25 @@ func (m *Manager) Region(id regionpkg.ID) *regionpkg.Region {
 	return m.regions[id]
 }
 
+// UpsertRegion replaces or inserts metadata for the provided region ID. The returned
+// pointer is the canonical entry stored in the manager.
+func (m *Manager) UpsertRegion(region regionpkg.Region) *regionpkg.Region {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cloned := region.Clone()
+	if existing := m.regions[region.ID]; existing != nil {
+		*existing = cloned
+		return existing
+	}
+	regionPtr := &cloned
+	m.regions[region.ID] = regionPtr
+	if region.ID >= m.nextID {
+		m.nextID = region.ID + 1
+	}
+	return regionPtr
+}
+
 // CreateRegion allocates a new region with the provided key range.
 func (m *Manager) CreateRegion(keyRange regionpkg.KeyRange) *regionpkg.Region {
 	m.mu.Lock()

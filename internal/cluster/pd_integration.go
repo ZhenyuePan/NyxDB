@@ -1,10 +1,12 @@
 package cluster
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"time"
 
+	regionmgr "nyxdb/internal/cluster/regions"
 	pd "nyxdb/internal/layers/pd"
 	pdgrpc "nyxdb/internal/layers/pd/grpc"
 	regionpkg "nyxdb/internal/region"
@@ -108,9 +110,78 @@ func (c *Cluster) metadataClient() pd.MetadataClient {
 }
 
 func (c *Cluster) syncRegionsWithPD(client pd.MetadataClient) {
-	regions := c.regionMgr.Regions()
-	for _, region := range regions {
-		c.registerRegionWithPD(client, region)
+	snapshots, err := client.RegionsByStore(c.nodeID)
+	if err != nil {
+		fmt.Printf("pd sync: fetch regions for store %d failed: %v\n", c.nodeID, err)
+		return
+	}
+
+	seen := make(map[regionpkg.ID]struct{}, len(snapshots))
+	dirty := false
+
+	for _, snapshot := range snapshots {
+		region := snapshot.Region.Clone()
+		if region.ID == 0 {
+			continue
+		}
+		seen[region.ID] = struct{}{}
+
+		local := c.regionMgr.Region(region.ID)
+		update := false
+		if local == nil {
+			fmt.Printf("pd sync: adopting region %d metadata from PD\n", region.ID)
+			update = true
+		} else {
+			if !bytes.Equal(local.Range.Start, region.Range.Start) || !bytes.Equal(local.Range.End, region.Range.End) {
+				fmt.Printf("pd sync: region %d range mismatch (local [%x,%x) vs PD [%x,%x)); adopting PD metadata\n",
+					region.ID, local.Range.Start, local.Range.End, region.Range.Start, region.Range.End)
+				update = true
+			}
+			if local.Epoch.Version != region.Epoch.Version || local.Epoch.ConfVersion != region.Epoch.ConfVersion {
+				fmt.Printf("pd sync: region %d epoch mismatch (local v=%d,c=%d PD v=%d,c=%d); adopting PD metadata\n",
+					region.ID, local.Epoch.Version, local.Epoch.ConfVersion, region.Epoch.Version, region.Epoch.ConfVersion)
+				update = true
+			}
+			if local.Leader != region.Leader {
+				fmt.Printf("pd sync: region %d leader mismatch (local=%d PD=%d); adopting PD metadata\n",
+					region.ID, local.Leader, region.Leader)
+				update = true
+			}
+			if local.State != region.State {
+				fmt.Printf("pd sync: region %d state mismatch (local=%d PD=%d); adopting PD metadata\n",
+					region.ID, local.State, region.State)
+				update = true
+			}
+			if !peersEqual(local.Peers, region.Peers) {
+				fmt.Printf("pd sync: region %d peer set mismatch; adopting PD metadata\n", region.ID)
+				update = true
+			}
+		}
+		if update {
+			c.regionMgr.UpsertRegion(region)
+			dirty = true
+			if c.replica(region.ID) == nil {
+				fmt.Printf("pd sync: region %d metadata updated but no local replica registered; region remains inactive until replica is created\n", region.ID)
+			}
+		}
+	}
+
+	locals := c.regionMgr.Regions()
+	for _, local := range locals {
+		if _, ok := seen[local.ID]; ok {
+			continue
+		}
+		if local.ID == regionmgr.DefaultRegionID {
+			continue
+		}
+		fmt.Printf("pd sync: region %d missing on PD; registering local metadata\n", local.ID)
+		c.registerRegionWithPD(client, local)
+	}
+
+	if dirty {
+		if err := c.persistRegions(); err != nil {
+			fmt.Printf("pd sync: persist regions failed: %v\n", err)
+		}
 	}
 }
 
@@ -137,4 +208,24 @@ func (c *Cluster) tombstoneRegionWithPD(client pd.MetadataClient, region regionp
 	if _, err := client.UpdateRegion(region); err != nil && !pd.IsRegionNotFoundError(err) {
 		fmt.Printf("pd: tombstone region %d failed: %v\n", region.ID, err)
 	}
+}
+
+func peersEqual(a, b []regionpkg.Peer) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	lookup := make(map[uint64]regionpkg.Peer, len(a))
+	for _, peer := range a {
+		lookup[peer.StoreID] = peer
+	}
+	for _, peer := range b {
+		local, ok := lookup[peer.StoreID]
+		if !ok {
+			return false
+		}
+		if local.ID != peer.ID || local.Role != peer.Role {
+			return false
+		}
+	}
+	return true
 }

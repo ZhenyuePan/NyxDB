@@ -138,6 +138,92 @@ func TestClusterRegistersRegionsWithPD(t *testing.T) {
 	}, 2*time.Second, 50*time.Millisecond)
 }
 
+func TestClusterSyncRegionsFromPD(t *testing.T) {
+	dir := t.TempDir()
+	opts := db.DefaultOptions
+	opts.DirPath = dir
+	opts.EnableDiagnostics = false
+	opts.ClusterConfig = &db.ClusterOptions{
+		ClusterMode:      true,
+		NodeAddress:      "127.0.0.1:9201",
+		ClusterAddresses: []string{"1@127.0.0.1:9201"},
+	}
+
+	engine, err := db.Open(opts)
+	require.NoError(t, err)
+
+	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
+	require.NoError(t, err)
+
+	svc := pd.NewService()
+
+	defaultPeerID := peerIDFor(regionmgr.DefaultRegionID, 1)
+	defaultRegion := regionpkg.Region{
+		ID:     regionmgr.DefaultRegionID,
+		Range:  regionpkg.KeyRange{},
+		Epoch:  regionpkg.Epoch{Version: 5, ConfVersion: 4},
+		State:  regionpkg.StateActive,
+		Leader: defaultPeerID,
+		Peers: []regionpkg.Peer{
+			{ID: defaultPeerID, StoreID: 1, Role: regionpkg.Voter},
+		},
+	}
+	_, err = svc.RegisterRegion(defaultRegion)
+	require.NoError(t, err)
+
+	newPeerID := peerIDFor(2, 1)
+	regionTwo := regionpkg.Region{
+		ID: 2,
+		Range: regionpkg.KeyRange{
+			Start: []byte("m"),
+			End:   []byte("t"),
+		},
+		Epoch:  regionpkg.Epoch{Version: 3, ConfVersion: 2},
+		State:  regionpkg.StateActive,
+		Leader: newPeerID,
+		Peers: []regionpkg.Peer{
+			{ID: newPeerID, StoreID: 1, Role: regionpkg.Voter},
+			{ID: peerIDFor(2, 2), StoreID: 2, Role: regionpkg.Learner},
+		},
+	}
+	_, err = svc.RegisterRegion(regionTwo)
+	require.NoError(t, err)
+
+	cl.AttachPD(svc, time.Second)
+
+	// PD metadata should override the default region epoch.
+	localDefault := cl.regionMgr.Region(regionmgr.DefaultRegionID)
+	require.NotNil(t, localDefault)
+	require.Equal(t, uint64(5), localDefault.Epoch.Version)
+	require.Equal(t, defaultPeerID, localDefault.Leader)
+
+	// Region 2 should now exist locally even though it wasn't persisted before.
+	localRegionTwo := cl.regionMgr.Region(2)
+	require.NotNil(t, localRegionTwo)
+	require.Equal(t, []byte("m"), localRegionTwo.Range.Start)
+	require.Equal(t, []byte("t"), localRegionTwo.Range.End)
+	require.Equal(t, uint64(3), localRegionTwo.Epoch.Version)
+	require.Len(t, localRegionTwo.Peers, 2)
+
+	// Persisted snapshot should include region 2.
+	regions, _, err := cl.regionStore.Load()
+	require.NoError(t, err)
+	found := false
+	for _, r := range regions {
+		if r.ID == 2 {
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "region 2 metadata should be persisted locally")
+
+	require.NoError(t, cl.Start())
+	defer func() {
+		_ = cl.Stop()
+		_ = engine.Close()
+	}()
+}
+
 func TestClusterMembershipPersistence(t *testing.T) {
 	dir := t.TempDir()
 	opts := db.DefaultOptions
