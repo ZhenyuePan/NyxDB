@@ -170,6 +170,33 @@ message RegionSnapshot {
   repeated RegionReplicaDescriptor replicas = 2;
 }
 
+message RegionPeerMetadata {
+  uint64 peer_id = 1;
+  uint64 store_id = 2;
+  RegionRole role = 3;
+}
+
+message RegionMetadata {
+  RegionDescriptor region = 1;
+  repeated RegionPeerMetadata peers = 2;
+}
+
+message RegisterRegionRequest {
+  RegionMetadata metadata = 1;
+}
+
+message RegisterRegionResponse {
+  RegionMetadata metadata = 1;
+}
+
+message UpdateRegionRequest {
+  RegionMetadata metadata = 1;
+}
+
+message UpdateRegionResponse {
+  RegionMetadata metadata = 1;
+}
+
 message GetRegionResponse {
   RegionSnapshot snapshot = 1;
 }
@@ -177,6 +204,14 @@ message GetRegionResponse {
 message ListRegionsRequest {}
 
 message ListRegionsResponse {
+  repeated RegionSnapshot snapshots = 1;
+}
+
+message GetRegionsByStoreRequest {
+  uint64 store_id = 1;
+}
+
+message GetRegionsByStoreResponse {
   repeated RegionSnapshot snapshots = 1;
 }
 
@@ -218,8 +253,11 @@ service Admin {
 
 service PD {
   rpc StoreHeartbeat(StoreHeartbeatRequest) returns (StoreHeartbeatResponse);
+  rpc RegisterRegion(RegisterRegionRequest) returns (RegisterRegionResponse);
+  rpc UpdateRegion(UpdateRegionRequest) returns (UpdateRegionResponse);
   rpc ListStores(ListStoresRequest) returns (ListStoresResponse);
   rpc GetRegionByKey(GetRegionByKeyRequest) returns (GetRegionByKeyResponse);
   rpc GetRegion(GetRegionRequest) returns (GetRegionResponse);
   rpc ListRegions(ListRegionsRequest) returns (ListRegionsResponse);
+  rpc GetRegionsByStore(GetRegionsByStoreRequest) returns (GetRegionsByStoreResponse);
 }

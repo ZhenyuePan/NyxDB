@@ -78,6 +78,66 @@ func TestClusterLinearizableRead(t *testing.T) {
 	require.Equal(t, []byte("value-new"), val)
 }
 
+func TestClusterRegistersRegionsWithPD(t *testing.T) {
+	dir := t.TempDir()
+	opts := db.DefaultOptions
+	opts.DirPath = dir
+	opts.EnableDiagnostics = false
+	opts.ClusterConfig = &db.ClusterOptions{
+		ClusterMode:      true,
+		NodeAddress:      "127.0.0.1:9101",
+		ClusterAddresses: []string{"1@127.0.0.1:9101"},
+	}
+
+	engine, err := db.Open(opts)
+	require.NoError(t, err)
+
+	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
+	require.NoError(t, err)
+	require.NoError(t, cl.Start())
+	t.Cleanup(func() {
+		_ = cl.Stop()
+		_ = engine.Close()
+	})
+
+	require.Eventually(t, func() bool { return cl.IsLeader() }, 5*time.Second, 50*time.Millisecond)
+
+	svc := pd.NewService()
+	cl.AttachPD(svc, time.Second)
+
+	require.Eventually(t, func() bool {
+		snapshot, ok := svc.RegionSnapshot(1)
+		if !ok {
+			return false
+		}
+		return snapshot.Region.ID == regionmgr.DefaultRegionID
+	}, 2*time.Second, 50*time.Millisecond)
+
+	newRegion, err := cl.CreateStaticRegion(regionpkg.KeyRange{Start: []byte("a"), End: []byte("b")})
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		snapshot, ok := svc.RegionSnapshot(uint64(newRegion.ID))
+		if !ok {
+			return false
+		}
+		return snapshot.Region.State == regionpkg.StateActive && len(snapshot.Region.Peers) > 0
+	}, 2*time.Second, 50*time.Millisecond)
+
+	snapshots, err := svc.RegionsByStore(cl.nodeID)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(snapshots), 1)
+
+	require.NoError(t, cl.RemoveRegion(newRegion.ID))
+	require.Eventually(t, func() bool {
+		snapshot, ok := svc.RegionSnapshot(uint64(newRegion.ID))
+		if !ok {
+			return false
+		}
+		return snapshot.Region.State == regionpkg.StateTombstone
+	}, 2*time.Second, 50*time.Millisecond)
+}
+
 func TestClusterMembershipPersistence(t *testing.T) {
 	dir := t.TempDir()
 	opts := db.DefaultOptions

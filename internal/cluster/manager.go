@@ -104,10 +104,10 @@ type Cluster struct {
 	diagnosticsMu        sync.RWMutex
 	diagnosticsObservers []func(Diagnostics)
 
-    regionMgr           *regionmgr.Manager
+	regionMgr           *regionmgr.Manager
 	lifecycleMu         sync.RWMutex
 	started             bool
-	pdClient            pd.Heartbeater
+	pdClient            pd.MetadataClient
 	pdHeartbeatInterval time.Duration
 	pdHeartbeatStarted  bool
 	pdCloser            func() error
@@ -530,8 +530,8 @@ func (c *Cluster) RemoveMember(nodeID uint64) error {
 	peerID := peerIDFor(regionmgr.DefaultRegionID, nodeID)
 	ctx := strconv.FormatUint(nodeID, 10)
 	cc := raftpb.ConfChange{
-		Type:   raftpb.ConfChangeRemoveNode,
-		NodeID: peerID,
+		Type:    raftpb.ConfChangeRemoveNode,
+		NodeID:  peerID,
 		Context: []byte(ctx),
 	}
 
@@ -909,11 +909,11 @@ func (c *Cluster) persistMembers() error {
 }
 
 func (c *Cluster) persistRegions() error {
-    if c.regionStore == nil {
-        return nil
-    }
-    regions, next := c.regionMgr.Snapshot()
-    return c.regionStore.Save(regions, next)
+	if c.regionStore == nil {
+		return nil
+	}
+	regions, next := c.regionMgr.Snapshot()
+	return c.regionStore.Save(regions, next)
 }
 
 var (

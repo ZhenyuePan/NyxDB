@@ -138,3 +138,90 @@ func protoStateToRegionState(state api.RegionState) regionpkg.State {
 		return regionpkg.StateActive
 	}
 }
+
+// RegionMetadataToProto converts persisted region metadata into API form.
+func RegionMetadataToProto(region regionpkg.Region) *api.RegionMetadata {
+	meta := &api.RegionMetadata{
+		Region: RegionToProto(region),
+		Peers:  make([]*api.RegionPeerMetadata, 0, len(region.Peers)),
+	}
+	for _, peer := range region.Peers {
+		meta.Peers = append(meta.Peers, &api.RegionPeerMetadata{
+			PeerId:  peer.ID,
+			StoreId: peer.StoreID,
+			Role:    PeerRoleToProto(peer.Role),
+		})
+	}
+	return meta
+}
+
+// ProtoToRegionMetadata converts API metadata into the internal Region structure.
+func ProtoToRegionMetadata(meta *api.RegionMetadata) (regionpkg.Region, error) {
+	if meta == nil {
+		return regionpkg.Region{}, fmt.Errorf("region metadata is nil")
+	}
+	region := ProtoToRegion(meta.GetRegion())
+	if region.ID == 0 {
+		return regionpkg.Region{}, fmt.Errorf("region metadata missing region id")
+	}
+	peers := meta.GetPeers()
+	if len(peers) > 0 {
+		region.Peers = make([]regionpkg.Peer, 0, len(peers))
+		for _, peer := range peers {
+			region.Peers = append(region.Peers, regionpkg.Peer{
+				ID:      peer.GetPeerId(),
+				StoreID: peer.GetStoreId(),
+				Role:    protoRoleToPeerRole(peer.GetRole()),
+			})
+		}
+	}
+	return region, nil
+}
+
+// RegionSnapshotToProto converts a snapshot into protobuf form.
+func RegionSnapshotToProto(snapshot RegionSnapshot) *api.RegionSnapshot {
+	return &api.RegionSnapshot{
+		Region:   RegionToProto(snapshot.Region),
+		Replicas: RegionHeartbeatsToProto(snapshot.Peers),
+	}
+}
+
+// RegionHeartbeatsToProto converts a slice of heartbeats into replica descriptors.
+func RegionHeartbeatsToProto(peers []RegionHeartbeat) []*api.RegionReplicaDescriptor {
+	replicas := make([]*api.RegionReplicaDescriptor, 0, len(peers))
+	for _, peer := range peers {
+		replicas = append(replicas, &api.RegionReplicaDescriptor{
+			RegionId:     uint64(peer.Region.ID),
+			StoreId:      peer.StoreID,
+			PeerId:       peer.PeerID,
+			Role:         PeerRoleToProto(peer.Role),
+			AppliedIndex: peer.AppliedIndex,
+			Region:       RegionToProto(peer.Region),
+		})
+	}
+	return replicas
+}
+
+// ProtoToRegionSnapshot converts a protobuf snapshot into internal structures.
+func ProtoToRegionSnapshot(snapshot *api.RegionSnapshot) (RegionSnapshot, error) {
+	if snapshot == nil {
+		return RegionSnapshot{}, fmt.Errorf("region snapshot is nil")
+	}
+	region := ProtoToRegion(snapshot.GetRegion())
+	replicas := snapshot.GetReplicas()
+	peers := make([]RegionHeartbeat, 0, len(replicas))
+	for _, replica := range replicas {
+		regionMeta := ProtoToRegion(replica.GetRegion())
+		if regionMeta.ID == 0 {
+			regionMeta.ID = regionpkg.ID(replica.GetRegionId())
+		}
+		peers = append(peers, RegionHeartbeat{
+			Region:       regionMeta,
+			StoreID:      replica.GetStoreId(),
+			PeerID:       replica.GetPeerId(),
+			Role:         protoRoleToPeerRole(replica.GetRole()),
+			AppliedIndex: replica.GetAppliedIndex(),
+		})
+	}
+	return RegionSnapshot{Region: region, Peers: peers}, nil
+}

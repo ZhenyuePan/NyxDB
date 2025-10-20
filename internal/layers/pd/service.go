@@ -3,6 +3,7 @@ package pd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -87,15 +88,28 @@ func (b *boltHeartbeatStore) Close() error {
 
 // Service stores PD metadata, optionally persisting to NyxDB.
 type Service struct {
-	mu      sync.RWMutex
-	stores  map[uint64]StoreHeartbeat
-	store   heartbeatStore
-	regions map[uint64]*regionMeta
+	mu            sync.RWMutex
+	stores        map[uint64]StoreHeartbeat
+	store         heartbeatStore
+	regions       map[uint64]*regionMeta
+	regionEntries map[uint64]regionpkg.Region
+	regionStore   regionMetadataStore
 }
+
+var (
+	// ErrRegionExists indicates the region is already present in PD metadata.
+	ErrRegionExists = errors.New("pd: region already registered")
+	// ErrRegionNotFound indicates the region metadata is unknown to PD.
+	ErrRegionNotFound = errors.New("pd: region not registered")
+)
 
 // NewService creates a pure in-memory PD service.
 func NewService() *Service {
-	svc := &Service{stores: make(map[uint64]StoreHeartbeat), regions: make(map[uint64]*regionMeta)}
+	svc := &Service{
+		stores:        make(map[uint64]StoreHeartbeat),
+		regions:       make(map[uint64]*regionMeta),
+		regionEntries: make(map[uint64]regionpkg.Region),
+	}
 	svc.rebuildRegionsLocked()
 	return svc
 }
@@ -107,9 +121,22 @@ func NewPersistentService(dir string) (*Service, error) {
 		return nil, fmt.Errorf("open pd storage: %w", err)
 	}
 
-	svc := &Service{stores: make(map[uint64]StoreHeartbeat), store: store, regions: make(map[uint64]*regionMeta)}
+	regionStore, err := newBoltRegionStore(dir)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("open pd region storage: %w", err)
+	}
+
+	svc := &Service{
+		stores:        make(map[uint64]StoreHeartbeat),
+		store:         store,
+		regions:       make(map[uint64]*regionMeta),
+		regionEntries: make(map[uint64]regionpkg.Region),
+		regionStore:   regionStore,
+	}
 	if err := svc.loadFromStore(); err != nil {
 		_ = store.Close()
+		_ = regionStore.Close()
 		return nil, err
 	}
 	svc.rebuildRegionsLocked()
@@ -154,22 +181,131 @@ func (s *Service) Stores() []StoreHeartbeat {
 
 // Close releases persistent resources if present.
 func (s *Service) Close() error {
+	var err error
 	if s.store != nil {
-		return s.store.Close()
+		if e := s.store.Close(); err == nil {
+			err = e
+		}
+	}
+	if s.regionStore != nil {
+		if e := s.regionStore.Close(); err == nil {
+			err = e
+		}
+	}
+	return err
+}
+
+const (
+	storeKeyPrefix  = "store/"
+	regionKeyPrefix = "region/"
+)
+
+func (s *Service) loadFromStore() error {
+	if s.store != nil {
+		if err := s.store.ForEach(func(hb StoreHeartbeat) error {
+			s.stores[hb.StoreID] = hb
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	if s.regionStore != nil {
+		if err := s.regionStore.ForEach(func(region regionpkg.Region) error {
+			s.regionEntries[uint64(region.ID)] = region.Clone()
+			return nil
+		}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-const storeKeyPrefix = "store/"
-
-func (s *Service) loadFromStore() error {
-	if s.store == nil {
-		return nil
+// RegisterRegion persists a new region definition into PD metadata.
+func (s *Service) RegisterRegion(region regionpkg.Region) (regionpkg.Region, error) {
+	if region.ID == 0 {
+		return regionpkg.Region{}, fmt.Errorf("region id is zero")
 	}
-	return s.store.ForEach(func(hb StoreHeartbeat) error {
-		s.stores[hb.StoreID] = hb
-		return nil
+	clone := region.Clone()
+	id := uint64(clone.ID)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.regionEntries[id]; exists {
+		return regionpkg.Region{}, fmt.Errorf("%w: %d", ErrRegionExists, id)
+	}
+	if err := s.upsertRegionLocked(clone); err != nil {
+		return regionpkg.Region{}, err
+	}
+	s.rebuildRegionsLocked()
+	return clone, nil
+}
+
+// UpdateRegion upserts metadata for an existing region.
+func (s *Service) UpdateRegion(region regionpkg.Region) (regionpkg.Region, error) {
+	if region.ID == 0 {
+		return regionpkg.Region{}, fmt.Errorf("region id is zero")
+	}
+	clone := region.Clone()
+	id := uint64(clone.ID)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.regionEntries[id]; !exists {
+		return regionpkg.Region{}, fmt.Errorf("%w: %d", ErrRegionNotFound, id)
+	}
+	if err := s.upsertRegionLocked(clone); err != nil {
+		return regionpkg.Region{}, err
+	}
+	s.rebuildRegionsLocked()
+	return clone, nil
+}
+
+func (s *Service) upsertRegionLocked(region regionpkg.Region) error {
+	id := uint64(region.ID)
+	prev, hadPrev := s.regionEntries[id]
+	s.regionEntries[id] = region
+	if s.regionStore != nil {
+		if err := s.regionStore.Put(region); err != nil {
+			if hadPrev {
+				s.regionEntries[id] = prev
+			} else {
+				delete(s.regionEntries, id)
+			}
+			return fmt.Errorf("persist region %d: %w", region.ID, err)
+		}
+	}
+	return nil
+}
+
+// RegionMetadata returns the persisted metadata for a region.
+func (s *Service) RegionMetadata(id regionpkg.ID) (regionpkg.Region, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	region, ok := s.regionEntries[uint64(id)]
+	if !ok {
+		return regionpkg.Region{}, false
+	}
+	return region.Clone(), true
+}
+
+// RegionsByStore returns region snapshots containing replicas on the given store.
+func (s *Service) RegionsByStore(storeID uint64) ([]RegionSnapshot, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	snapshots := make([]RegionSnapshot, 0)
+	for _, meta := range s.regions {
+		if storeID == 0 {
+			snapshots = append(snapshots, meta.snapshot())
+			continue
+		}
+		if _, ok := meta.peers[storeID]; ok {
+			snapshots = append(snapshots, meta.snapshot())
+		}
+	}
+	sort.Slice(snapshots, func(i, j int) bool {
+		return snapshots[i].Region.ID < snapshots[j].Region.ID
 	})
+	return snapshots, nil
 }
 
 // RegionSnapshot captures metadata about a region and its replicas.
@@ -184,36 +320,59 @@ type regionMeta struct {
 }
 
 func (m *regionMeta) snapshot() RegionSnapshot {
+	regionClone := m.region.Clone()
 	peers := make([]RegionHeartbeat, 0, len(m.peers))
 	for _, hb := range m.peers {
-		peers = append(peers, hb)
+		copy := hb
+		copy.Region = regionClone
+		peers = append(peers, copy)
 	}
 	sort.Slice(peers, func(i, j int) bool { return peers[i].StoreID < peers[j].StoreID })
-	return RegionSnapshot{Region: m.region.Clone(), Peers: peers}
+	return RegionSnapshot{Region: regionClone, Peers: peers}
 }
 
 func (s *Service) rebuildRegionsLocked() {
-	if s.regions == nil {
-		s.regions = make(map[uint64]*regionMeta)
+	regions := make(map[uint64]*regionMeta)
+	for id, region := range s.regionEntries {
+		clone := region.Clone()
+		meta := &regionMeta{
+			region: clone,
+			peers:  make(map[uint64]RegionHeartbeat),
+		}
+		for _, peer := range clone.Peers {
+			meta.peers[peer.StoreID] = RegionHeartbeat{
+				Region:  clone,
+				StoreID: peer.StoreID,
+				PeerID:  peer.ID,
+				Role:    peer.Role,
+			}
+		}
+		regions[id] = meta
 	}
-	s.regions = make(map[uint64]*regionMeta)
 	for _, hb := range s.stores {
 		for _, rh := range hb.Regions {
 			regionID := uint64(rh.Region.ID)
-			meta := s.regions[regionID]
+			meta := regions[regionID]
 			if meta == nil {
+				clone := rh.Region.Clone()
 				meta = &regionMeta{
-					region: rh.Region.Clone(),
+					region: clone,
 					peers:  make(map[uint64]RegionHeartbeat),
 				}
-				s.regions[regionID] = meta
-			} else {
-				mergeRegionMeta(&meta.region, rh.Region)
 			}
+			mergeRegionMeta(&meta.region, rh.Region)
 			ensureRegionPeer(&meta.region, rh)
-			meta.peers[rh.StoreID] = rh
+			meta.peers[rh.StoreID] = RegionHeartbeat{
+				Region:       meta.region.Clone(),
+				StoreID:      rh.StoreID,
+				PeerID:       rh.PeerID,
+				Role:         rh.Role,
+				AppliedIndex: rh.AppliedIndex,
+			}
+			regions[regionID] = meta
 		}
 	}
+	s.regions = regions
 }
 
 func mergeRegionMeta(dst *regionpkg.Region, incoming regionpkg.Region) {

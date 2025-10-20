@@ -37,3 +37,11 @@ type StoreHeartbeatResponse struct {
 type Heartbeater interface {
 	HandleHeartbeat(StoreHeartbeat) StoreHeartbeatResponse
 }
+
+// MetadataClient exposes region registration and query capabilities.
+type MetadataClient interface {
+	Heartbeater
+	RegisterRegion(regionpkg.Region) (regionpkg.Region, error)
+	UpdateRegion(regionpkg.Region) (regionpkg.Region, error)
+	RegionsByStore(storeID uint64) ([]RegionSnapshot, error)
+}

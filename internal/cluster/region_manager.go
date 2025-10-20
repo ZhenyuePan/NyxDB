@@ -37,6 +37,9 @@ func (c *Cluster) CreateStaticRegion(keyRange regionpkg.KeyRange) (*regionpkg.Re
 	c.sendPDHeartbeat()
 
 	clone := replica.Region.Clone()
+	if client := c.metadataClient(); client != nil {
+		c.registerRegionWithPD(client, clone)
+	}
 	return &clone, nil
 }
 
@@ -57,6 +60,11 @@ func (c *Cluster) RemoveRegion(id regionpkg.ID) error {
 	if id == regionmgr.DefaultRegionID {
 		return fmt.Errorf("cannot remove default region")
 	}
+	var regionSnapshot *regionpkg.Region
+	if meta := c.regionMgr.Region(id); meta != nil {
+		clone := meta.Clone()
+		regionSnapshot = &clone
+	}
 	rep := c.regionMgr.RemoveRegion(id)
 	if rep == nil {
 		return nil
@@ -72,5 +80,11 @@ func (c *Cluster) RemoveRegion(id regionpkg.ID) error {
 		return err
 	}
 	c.sendPDHeartbeat()
+	if regionSnapshot != nil {
+		client := c.metadataClient()
+		if client != nil {
+			c.tombstoneRegionWithPD(client, *regionSnapshot)
+		}
+	}
 	return utils.RemoveDir(regionBaseDir(c.options.DirPath, id))
 }

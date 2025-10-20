@@ -706,11 +706,14 @@ var Admin_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	PD_StoreHeartbeat_FullMethodName = "/nyxdb.api.PD/StoreHeartbeat"
-	PD_ListStores_FullMethodName     = "/nyxdb.api.PD/ListStores"
-	PD_GetRegionByKey_FullMethodName = "/nyxdb.api.PD/GetRegionByKey"
-	PD_GetRegion_FullMethodName      = "/nyxdb.api.PD/GetRegion"
-	PD_ListRegions_FullMethodName    = "/nyxdb.api.PD/ListRegions"
+	PD_StoreHeartbeat_FullMethodName    = "/nyxdb.api.PD/StoreHeartbeat"
+	PD_RegisterRegion_FullMethodName    = "/nyxdb.api.PD/RegisterRegion"
+	PD_UpdateRegion_FullMethodName      = "/nyxdb.api.PD/UpdateRegion"
+	PD_ListStores_FullMethodName        = "/nyxdb.api.PD/ListStores"
+	PD_GetRegionByKey_FullMethodName    = "/nyxdb.api.PD/GetRegionByKey"
+	PD_GetRegion_FullMethodName         = "/nyxdb.api.PD/GetRegion"
+	PD_ListRegions_FullMethodName       = "/nyxdb.api.PD/ListRegions"
+	PD_GetRegionsByStore_FullMethodName = "/nyxdb.api.PD/GetRegionsByStore"
 )
 
 // PDClient is the client API for PD service.
@@ -718,10 +721,13 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type PDClient interface {
 	StoreHeartbeat(ctx context.Context, in *StoreHeartbeatRequest, opts ...grpc.CallOption) (*StoreHeartbeatResponse, error)
+	RegisterRegion(ctx context.Context, in *RegisterRegionRequest, opts ...grpc.CallOption) (*RegisterRegionResponse, error)
+	UpdateRegion(ctx context.Context, in *UpdateRegionRequest, opts ...grpc.CallOption) (*UpdateRegionResponse, error)
 	ListStores(ctx context.Context, in *ListStoresRequest, opts ...grpc.CallOption) (*ListStoresResponse, error)
 	GetRegionByKey(ctx context.Context, in *GetRegionByKeyRequest, opts ...grpc.CallOption) (*GetRegionByKeyResponse, error)
 	GetRegion(ctx context.Context, in *GetRegionRequest, opts ...grpc.CallOption) (*GetRegionResponse, error)
 	ListRegions(ctx context.Context, in *ListRegionsRequest, opts ...grpc.CallOption) (*ListRegionsResponse, error)
+	GetRegionsByStore(ctx context.Context, in *GetRegionsByStoreRequest, opts ...grpc.CallOption) (*GetRegionsByStoreResponse, error)
 }
 
 type pDClient struct {
@@ -736,6 +742,26 @@ func (c *pDClient) StoreHeartbeat(ctx context.Context, in *StoreHeartbeatRequest
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StoreHeartbeatResponse)
 	err := c.cc.Invoke(ctx, PD_StoreHeartbeat_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pDClient) RegisterRegion(ctx context.Context, in *RegisterRegionRequest, opts ...grpc.CallOption) (*RegisterRegionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RegisterRegionResponse)
+	err := c.cc.Invoke(ctx, PD_RegisterRegion_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pDClient) UpdateRegion(ctx context.Context, in *UpdateRegionRequest, opts ...grpc.CallOption) (*UpdateRegionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateRegionResponse)
+	err := c.cc.Invoke(ctx, PD_UpdateRegion_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -782,15 +808,28 @@ func (c *pDClient) ListRegions(ctx context.Context, in *ListRegionsRequest, opts
 	return out, nil
 }
 
+func (c *pDClient) GetRegionsByStore(ctx context.Context, in *GetRegionsByStoreRequest, opts ...grpc.CallOption) (*GetRegionsByStoreResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetRegionsByStoreResponse)
+	err := c.cc.Invoke(ctx, PD_GetRegionsByStore_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PDServer is the server API for PD service.
 // All implementations must embed UnimplementedPDServer
 // for forward compatibility
 type PDServer interface {
 	StoreHeartbeat(context.Context, *StoreHeartbeatRequest) (*StoreHeartbeatResponse, error)
+	RegisterRegion(context.Context, *RegisterRegionRequest) (*RegisterRegionResponse, error)
+	UpdateRegion(context.Context, *UpdateRegionRequest) (*UpdateRegionResponse, error)
 	ListStores(context.Context, *ListStoresRequest) (*ListStoresResponse, error)
 	GetRegionByKey(context.Context, *GetRegionByKeyRequest) (*GetRegionByKeyResponse, error)
 	GetRegion(context.Context, *GetRegionRequest) (*GetRegionResponse, error)
 	ListRegions(context.Context, *ListRegionsRequest) (*ListRegionsResponse, error)
+	GetRegionsByStore(context.Context, *GetRegionsByStoreRequest) (*GetRegionsByStoreResponse, error)
 	mustEmbedUnimplementedPDServer()
 }
 
@@ -800,6 +839,12 @@ type UnimplementedPDServer struct {
 
 func (UnimplementedPDServer) StoreHeartbeat(context.Context, *StoreHeartbeatRequest) (*StoreHeartbeatResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method StoreHeartbeat not implemented")
+}
+func (UnimplementedPDServer) RegisterRegion(context.Context, *RegisterRegionRequest) (*RegisterRegionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RegisterRegion not implemented")
+}
+func (UnimplementedPDServer) UpdateRegion(context.Context, *UpdateRegionRequest) (*UpdateRegionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateRegion not implemented")
 }
 func (UnimplementedPDServer) ListStores(context.Context, *ListStoresRequest) (*ListStoresResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListStores not implemented")
@@ -812,6 +857,9 @@ func (UnimplementedPDServer) GetRegion(context.Context, *GetRegionRequest) (*Get
 }
 func (UnimplementedPDServer) ListRegions(context.Context, *ListRegionsRequest) (*ListRegionsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListRegions not implemented")
+}
+func (UnimplementedPDServer) GetRegionsByStore(context.Context, *GetRegionsByStoreRequest) (*GetRegionsByStoreResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetRegionsByStore not implemented")
 }
 func (UnimplementedPDServer) mustEmbedUnimplementedPDServer() {}
 
@@ -840,6 +888,42 @@ func _PD_StoreHeartbeat_Handler(srv interface{}, ctx context.Context, dec func(i
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(PDServer).StoreHeartbeat(ctx, req.(*StoreHeartbeatRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PD_RegisterRegion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegisterRegionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PDServer).RegisterRegion(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PD_RegisterRegion_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PDServer).RegisterRegion(ctx, req.(*RegisterRegionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PD_UpdateRegion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateRegionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PDServer).UpdateRegion(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PD_UpdateRegion_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PDServer).UpdateRegion(ctx, req.(*UpdateRegionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -916,6 +1000,24 @@ func _PD_ListRegions_Handler(srv interface{}, ctx context.Context, dec func(inte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PD_GetRegionsByStore_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRegionsByStoreRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PDServer).GetRegionsByStore(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PD_GetRegionsByStore_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PDServer).GetRegionsByStore(ctx, req.(*GetRegionsByStoreRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PD_ServiceDesc is the grpc.ServiceDesc for PD service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -926,6 +1028,14 @@ var PD_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "StoreHeartbeat",
 			Handler:    _PD_StoreHeartbeat_Handler,
+		},
+		{
+			MethodName: "RegisterRegion",
+			Handler:    _PD_RegisterRegion_Handler,
+		},
+		{
+			MethodName: "UpdateRegion",
+			Handler:    _PD_UpdateRegion_Handler,
 		},
 		{
 			MethodName: "ListStores",
@@ -942,6 +1052,10 @@ var PD_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListRegions",
 			Handler:    _PD_ListRegions_Handler,
+		},
+		{
+			MethodName: "GetRegionsByStore",
+			Handler:    _PD_GetRegionsByStore_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

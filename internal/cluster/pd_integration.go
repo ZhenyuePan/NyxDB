@@ -2,15 +2,17 @@ package cluster
 
 import (
 	"context"
+	"fmt"
+	"time"
+
 	pd "nyxdb/internal/layers/pd"
 	pdgrpc "nyxdb/internal/layers/pd/grpc"
 	regionpkg "nyxdb/internal/region"
-	"time"
 )
 
 // AttachPD configures the cluster to report heartbeats to a PD service. If
 // called after Start, the heartbeat loop is launched immediately.
-func (c *Cluster) AttachPD(service pd.Heartbeater, interval time.Duration) {
+func (c *Cluster) AttachPD(service pd.MetadataClient, interval time.Duration) {
 	c.lifecycleMu.Lock()
 	c.pdClient = service
 	if interval > 0 {
@@ -23,6 +25,10 @@ func (c *Cluster) AttachPD(service pd.Heartbeater, interval time.Duration) {
 		c.pdHeartbeatStarted = true
 	}
 	c.lifecycleMu.Unlock()
+
+	if service != nil {
+		c.syncRegionsWithPD(service)
+	}
 
 	if startLoop {
 		c.wg.Add(1)
@@ -66,9 +72,7 @@ func (c *Cluster) runPDHeartbeats() {
 }
 
 func (c *Cluster) sendPDHeartbeat() {
-	c.lifecycleMu.RLock()
-	client := c.pdClient
-	c.lifecycleMu.RUnlock()
+	client := c.metadataClient()
 	if client == nil {
 		return
 	}
@@ -94,4 +98,43 @@ func (c *Cluster) sendPDHeartbeat() {
 		})
 	}
 	client.HandleHeartbeat(hb)
+}
+
+func (c *Cluster) metadataClient() pd.MetadataClient {
+	c.lifecycleMu.RLock()
+	client := c.pdClient
+	c.lifecycleMu.RUnlock()
+	return client
+}
+
+func (c *Cluster) syncRegionsWithPD(client pd.MetadataClient) {
+	regions := c.regionMgr.Regions()
+	for _, region := range regions {
+		c.registerRegionWithPD(client, region)
+	}
+}
+
+func (c *Cluster) registerRegionWithPD(client pd.MetadataClient, region regionpkg.Region) {
+	if client == nil || region.ID == 0 {
+		return
+	}
+	if _, err := client.RegisterRegion(region); err != nil {
+		if pd.IsRegionExistsError(err) {
+			if _, updateErr := client.UpdateRegion(region); updateErr != nil && !pd.IsRegionNotFoundError(updateErr) {
+				fmt.Printf("pd: update region %d failed: %v\n", region.ID, updateErr)
+			}
+			return
+		}
+		fmt.Printf("pd: register region %d failed: %v\n", region.ID, err)
+	}
+}
+
+func (c *Cluster) tombstoneRegionWithPD(client pd.MetadataClient, region regionpkg.Region) {
+	if client == nil || region.ID == 0 {
+		return
+	}
+	region.State = regionpkg.StateTombstone
+	if _, err := client.UpdateRegion(region); err != nil && !pd.IsRegionNotFoundError(err) {
+		fmt.Printf("pd: tombstone region %d failed: %v\n", region.ID, err)
+	}
 }
