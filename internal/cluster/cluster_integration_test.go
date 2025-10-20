@@ -12,9 +12,9 @@ import (
 	"time"
 
 	regionmgr "nyxdb/internal/cluster/regions"
-	db "nyxdb/internal/engine"
-	pd "nyxdb/internal/pd"
-	rafttransport "nyxdb/internal/raft"
+	db "nyxdb/internal/layers/engine"
+	pd "nyxdb/internal/layers/pd"
+	rafttransport "nyxdb/internal/layers/raft/transport"
 	regionpkg "nyxdb/internal/region"
 
 	"github.com/stretchr/testify/require"

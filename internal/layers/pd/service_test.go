@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"nyxdb/internal/pd"
+	"nyxdb/internal/layers/pd"
 	regionpkg "nyxdb/internal/region"
 )
 

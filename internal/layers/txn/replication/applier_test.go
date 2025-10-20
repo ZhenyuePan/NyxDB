@@ -1,7 +1,7 @@
 package replication
 
 import (
-    db "nyxdb/internal/engine"
+    db "nyxdb/internal/layers/engine"
     "os"
     "testing"
 

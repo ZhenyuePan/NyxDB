@@ -54,10 +54,10 @@ NyxDB 当前聚焦一个可运行的最小 MVP：单 Raft Group 的强一致 KV 
 ---
 
 **实现要点（怎么工作的）**
-- 写入：`KV/Put` → `internal/cluster/manager.go:Propose` → Raft → 提交后 `replication.Applier` 写入引擎。
-- 读取：`KV/Get` → `Node.ReadIndex`（`internal/node/node.go:ReadIndex`）→ `Node.WaitApplied` → 引擎 `DB.Get`。
-- 快照：`Cluster.TriggerSnapshot`（`internal/cluster/manager.go:612`）打包引擎目录，持久到 `internal/raftstorage`，并按 catch‑up 窗口截断日志；Follower 收到 Snapshot 自动恢复并 reopen 引擎。
-- 传输：gRPC RaftTransport（`internal/raft/transport_grpc.go`）。
+- 写入：`KV/Put` → `internal/cluster/manager.go:Propose` → Raft → 提交后 `internal/layers/txn/replication.Applier` 写入引擎。
+- 读取：`KV/Get` → `Node.ReadIndex`（`internal/layers/raft/node/node.go:ReadIndex`）→ `Node.WaitApplied` → 引擎 `DB.Get`。
+- 快照：`Cluster.TriggerSnapshot`（`internal/cluster/manager.go:612`）打包引擎目录，持久到 `internal/layers/raft/storage`，并按 catch‑up 窗口截断日志；Follower 收到 Snapshot 自动恢复并 reopen 引擎。
+- 传输：gRPC RaftTransport（`internal/layers/raft/transport/transport_grpc.go`）。
 - 健康：`grpc_health_v1`（`internal/server/grpc/server.go`）。
 
 ---
@@ -66,12 +66,12 @@ NyxDB 当前聚焦一个可运行的最小 MVP：单 Raft Group 的强一致 KV 
 - `cmd/nyxdb-server`：服务入口
 - `cmd/nyxdb-cli`：命令行工具
 - `internal/cluster`：读写入口、成员管理、快照/自动化
-- `internal/node`：etcd/raft 封装（Ready/Apply/ReadIndex）
-- `internal/raftstorage`：自研 Raft 持久化
-- `internal/raft`：传输抽象与 gRPC 实现
-- `internal/engine`：Bitcask+MVCC 引擎
+- `internal/layers/raft/node`：etcd/raft 封装（Ready/Apply/ReadIndex）
+- `internal/layers/raft/storage`：自研 Raft 持久化
+- `internal/layers/raft/transport`：传输抽象与 gRPC 实现
+- `internal/layers/engine`：Bitcask+MVCC 引擎
 - `internal/server/grpc`：KV/Admin gRPC
-- `internal/pd`：PD 原型（bbolt 持久化，默认不开）
+- `internal/layers/pd`：PD 原型（bbolt 持久化，默认不开）
 - `pkg/api`：gRPC 生成代码
 
 ---

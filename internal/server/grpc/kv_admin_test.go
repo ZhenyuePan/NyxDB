@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"nyxdb/internal/cluster"
-	db "nyxdb/internal/engine"
+	db "nyxdb/internal/layers/engine"
 	api "nyxdb/pkg/api"
 
 	"github.com/stretchr/testify/assert"
@@ -114,15 +114,15 @@ func (f *fakeCluster) TriggerMerge(force bool) error {
 }
 
 func (f *fakeCluster) TriggerSnapshot(force bool) error {
-    return nil
+	return nil
 }
 
 func (f *fakeCluster) LeaderAddress() string {
-    return f.leader
+	return f.leader
 }
 
 func (f *fakeCluster) SnapshotStatus() cluster.SnapshotStatus {
-    return cluster.SnapshotStatus{}
+	return cluster.SnapshotStatus{}
 }
 
 func TestKVService_PutGetDelete(t *testing.T) {
@@ -224,17 +224,17 @@ func TestAdminService_TriggerMerge(t *testing.T) {
 }
 
 func TestAdminService_TriggerSnapshot(t *testing.T) {
-    cl := newFakeCluster()
-    adm := NewAdminService(cl)
+	cl := newFakeCluster()
+	adm := NewAdminService(cl)
 
-    _, err := adm.TriggerSnapshot(context.Background(), &api.TriggerSnapshotRequest{Force: true})
-    assert.NoError(t, err)
+	_, err := adm.TriggerSnapshot(context.Background(), &api.TriggerSnapshotRequest{Force: true})
+	assert.NoError(t, err)
 }
 
 func TestAdminService_SnapshotStatus(t *testing.T) {
-    cl := newFakeCluster()
-    adm := NewAdminService(cl)
-    resp, err := adm.SnapshotStatus(context.Background(), &api.SnapshotStatusRequest{})
-    assert.NoError(t, err)
-    assert.NotNil(t, resp)
+	cl := newFakeCluster()
+	adm := NewAdminService(cl)
+	resp, err := adm.SnapshotStatus(context.Background(), &api.SnapshotStatusRequest{})
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
 }

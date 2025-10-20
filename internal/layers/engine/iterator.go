@@ -2,7 +2,7 @@ package db
 
 import (
 	"bytes"
-	"nyxdb/internal/engine/index"
+	"nyxdb/internal/layers/engine/index"
 )
 
 // Iterator 迭代器

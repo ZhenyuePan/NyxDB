@@ -6,7 +6,7 @@ import (
 
 	"google.golang.org/grpc"
 
-	pd "nyxdb/internal/pd"
+	pd "nyxdb/internal/layers/pd"
 	api "nyxdb/pkg/api"
 )
 

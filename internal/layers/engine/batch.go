@@ -2,7 +2,7 @@ package db
 
 import (
 	"encoding/binary"
-	"nyxdb/internal/engine/data"
+	"nyxdb/internal/layers/engine/data"
 	"sync"
 )
 

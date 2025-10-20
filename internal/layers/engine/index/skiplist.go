@@ -2,7 +2,7 @@ package index
 
 import (
 	"bytes"
-	"nyxdb/internal/engine/data"
+	"nyxdb/internal/layers/engine/data"
 	"sync"
 
 	"github.com/huandu/skiplist"

@@ -3,7 +3,7 @@ package config
 import (
 	"time"
 
-	db "nyxdb/internal/engine"
+	db "nyxdb/internal/layers/engine"
 	grpcserver "nyxdb/internal/server/grpc"
 )
 

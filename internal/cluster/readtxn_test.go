@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	db "nyxdb/internal/engine"
-	rafttransport "nyxdb/internal/raft"
+	db "nyxdb/internal/layers/engine"
+	rafttransport "nyxdb/internal/layers/raft/transport"
 
 	"github.com/stretchr/testify/require"
 )

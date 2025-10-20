@@ -10,8 +10,8 @@ import (
 
 	"google.golang.org/grpc"
 
-	pd "nyxdb/internal/pd"
-	pdgrpc "nyxdb/internal/pd/grpc"
+	pd "nyxdb/internal/layers/pd"
+	pdgrpc "nyxdb/internal/layers/pd/grpc"
 )
 
 func main() {

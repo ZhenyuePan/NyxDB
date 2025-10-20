@@ -5,8 +5,8 @@ import (
 	"io"
 	"sort"
 
-	"nyxdb/internal/engine/data"
-	"nyxdb/internal/engine/fio"
+	"nyxdb/internal/layers/engine/data"
+	"nyxdb/internal/layers/engine/fio"
 	"nyxdb/internal/utils"
 	"os"
 	"testing"

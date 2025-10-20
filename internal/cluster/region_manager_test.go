@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	db "nyxdb/internal/engine"
-	rafttransport "nyxdb/internal/raft"
+	db "nyxdb/internal/layers/engine"
+	rafttransport "nyxdb/internal/layers/raft/transport"
 	regionpkg "nyxdb/internal/region"
 
 	"github.com/stretchr/testify/require"

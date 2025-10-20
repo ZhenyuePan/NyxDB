@@ -1,7 +1,7 @@
 package index
 
 import (
-	"nyxdb/internal/engine/data"
+	"nyxdb/internal/layers/engine/data"
 	"testing"
 
 	"github.com/stretchr/testify/assert"

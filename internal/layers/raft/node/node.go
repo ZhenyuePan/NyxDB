@@ -10,7 +10,7 @@ import (
 	"github.com/gogo/protobuf/proto"
 	"go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
-	rafttransport "nyxdb/internal/raft"
+	rafttransport "nyxdb/internal/layers/raft/transport"
 )
 
 // WritableStorage augments raft.Storage with the write-side primitives the node expects.

@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"nyxdb/internal/cluster"
-	db "nyxdb/internal/engine"
+	db "nyxdb/internal/layers/engine"
 	api "nyxdb/pkg/api"
 
 	"google.golang.org/grpc"

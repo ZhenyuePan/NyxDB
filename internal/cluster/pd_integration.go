@@ -2,8 +2,8 @@ package cluster
 
 import (
 	"context"
-	pd "nyxdb/internal/pd"
-	pdgrpc "nyxdb/internal/pd/grpc"
+	pd "nyxdb/internal/layers/pd"
+	pdgrpc "nyxdb/internal/layers/pd/grpc"
 	regionpkg "nyxdb/internal/region"
 	"time"
 )

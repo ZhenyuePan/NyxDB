@@ -8,7 +8,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	pd "nyxdb/internal/pd"
+	pd "nyxdb/internal/layers/pd"
 	api "nyxdb/pkg/api"
 )
 

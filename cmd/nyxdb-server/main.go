@@ -10,8 +10,8 @@ import (
 
 	"nyxdb/internal/cluster"
 	"nyxdb/internal/config"
-	db "nyxdb/internal/engine"
-	"nyxdb/internal/observability/metrics"
+	db "nyxdb/internal/layers/engine"
+	"nyxdb/internal/layers/observability/metrics"
 	grpcserver "nyxdb/internal/server/grpc"
 )
 

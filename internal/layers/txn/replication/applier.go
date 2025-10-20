@@ -3,7 +3,7 @@ package replication
 import (
     "fmt"
 
-    db "nyxdb/internal/engine"
+    db "nyxdb/internal/layers/engine"
 )
 
 // Applier applies replicated commands to the local engine instance.

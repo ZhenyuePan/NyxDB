@@ -5,7 +5,7 @@ import (
 
 	"github.com/plar/go-adaptive-radix-tree"
 
-	"nyxdb/internal/engine/data"
+	"nyxdb/internal/layers/engine/data"
 )
 
 // ART wraps github.com/plar/go-adaptive-radix-tree to satisfy Indexer.

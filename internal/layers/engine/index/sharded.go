@@ -3,7 +3,7 @@ package index
 import (
 	"hash/fnv"
 
-	"nyxdb/internal/engine/data"
+	"nyxdb/internal/layers/engine/data"
 )
 
 // Sharded wraps multiple Indexer instances to reduce contention.

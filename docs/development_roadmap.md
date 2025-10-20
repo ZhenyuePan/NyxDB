@@ -8,7 +8,7 @@
   - 单 Raft Group 强一致写入与线性一致读（ReadIndex + WaitApplied）。
   - 读事务 API（`BeginReadTxn/ReadTxnGet/EndReadTxn`）与 TTL 清理线程。
   - 成员管理：`admin join/leave/members`，成员信息持久化至 `cluster/members.json` 并在重启时恢复。
-  - gRPC 传输（`internal/raft/transport_grpc.go`）与默认 stub 传输，为集成测试提供可选后端。
+  - gRPC 传输（`internal/layers/raft/transport/transport_grpc.go`）与默认 stub 传输，为集成测试提供可选后端。
 
 - **存储与快照**
   - Bitcask+MVCC 存储引擎，合并（merge）与备份能力。

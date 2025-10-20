@@ -2,7 +2,7 @@ package db
 
 import (
 	"io"
-	"nyxdb/internal/engine/data"
+	"nyxdb/internal/layers/engine/data"
 	"nyxdb/internal/utils"
 	"os"
 	"path"

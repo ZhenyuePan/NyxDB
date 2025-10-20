@@ -5,7 +5,7 @@ package main
 
 import (
 	"fmt"
-	db "nyxdb/internal/engine"
+	db "nyxdb/internal/layers/engine"
 	"os"
 )
 

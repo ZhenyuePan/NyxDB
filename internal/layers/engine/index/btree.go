@@ -3,7 +3,7 @@ package index
 //index中封装CRUD以及迭代器
 import (
 	"bytes"
-	"nyxdb/internal/engine/data"
+	"nyxdb/internal/layers/engine/data"
 	"sort"
 	"sync"
 

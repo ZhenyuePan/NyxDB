@@ -5,8 +5,8 @@ import (
 	"sort"
 	"sync"
 
-	raftnode "nyxdb/internal/node"
-	raftstorage "nyxdb/internal/raftstorage"
+	raftnode "nyxdb/internal/layers/raft/node"
+	raftstorage "nyxdb/internal/layers/raft/storage"
 	regionpkg "nyxdb/internal/region"
 )
 
