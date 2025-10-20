@@ -202,6 +202,90 @@ func TestClusterSingleNodeMultipleRegions(t *testing.T) {
 	require.Equal(t, regionmgr.DefaultRegionID, regionZ.ID)
 }
 
+func TestClusterMultiNodeMultipleRegions(t *testing.T) {
+	baseDir := t.TempDir()
+	network := newChaosNetwork()
+
+	clusterAddrs := []string{
+		"1@127.0.0.1:20001",
+		"2@127.0.0.1:20002",
+		"3@127.0.0.1:20003",
+	}
+
+	nodes := []*nodeHarness{}
+	for i := 1; i <= 3; i++ {
+		opts := db.DefaultOptions
+		opts.DirPath = filepath.Join(baseDir, fmt.Sprintf("node-%d", i))
+		opts.EnableDiagnostics = false
+		opts.ClusterConfig = &db.ClusterOptions{
+			ClusterMode:      true,
+			NodeAddress:      fmt.Sprintf("127.0.0.1:2000%d", i),
+			ClusterAddresses: clusterAddrs,
+		}
+
+		transport := newChaosTransport(network, uint64(i))
+		h := &nodeHarness{
+			id:        uint64(i),
+			opts:      opts,
+			transport: transport,
+			network:   network,
+		}
+		startNodeHarness(t, h)
+		nodes = append(nodes, h)
+	}
+
+	t.Cleanup(func() {
+		for _, n := range nodes {
+			stopNodeHarness(n)
+		}
+	})
+
+	leader := waitForHealthyCluster(t, nodes)
+	require.NotNil(t, leader)
+
+	region, err := leader.cluster.CreateStaticRegion(regionpkg.KeyRange{Start: []byte("a"), End: []byte("m")})
+	require.NoError(t, err)
+	require.NotNil(t, region)
+
+	for _, n := range nodes {
+		if n == leader {
+			continue
+		}
+		require.NoError(t, n.cluster.EnsureRegionReplica(region.Clone()))
+	}
+
+	regionLeader := waitForRegionLeader(t, nodes, region.ID)
+	require.NotNil(t, regionLeader)
+
+	require.Eventually(t, func() bool {
+		return regionLeader.cluster.Put([]byte("b"), []byte("value-b")) == nil
+	}, 5*time.Second, 50*time.Millisecond)
+
+	for _, n := range nodes {
+		require.Eventually(t, func() bool {
+			val, err := n.cluster.Get([]byte("b"))
+			return err == nil && bytes.Equal(val, []byte("value-b"))
+		}, 5*time.Second, 50*time.Millisecond)
+	}
+
+	follower := findRegionFollower(nodes, region.ID, regionLeader.id)
+	require.NotNil(t, follower)
+	err = follower.cluster.Put([]byte("b"), []byte("value-b2"))
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrNotLeader)
+
+	require.Eventually(t, func() bool {
+		return regionLeader.cluster.Put([]byte("z"), []byte("value-z")) == nil
+	}, 5*time.Second, 50*time.Millisecond)
+
+	for _, n := range nodes {
+		require.Eventually(t, func() bool {
+			val, err := n.cluster.Get([]byte("z"))
+			return err == nil && bytes.Equal(val, []byte("value-z"))
+		}, 5*time.Second, 50*time.Millisecond)
+	}
+}
+
 func TestClusterSyncRegionsFromPD(t *testing.T) {
 	dir := t.TempDir()
 	opts := db.DefaultOptions
@@ -878,6 +962,41 @@ func collectFollowers(nodes []*nodeHarness) []*nodeHarness {
 		}
 	}
 	return followers
+}
+
+func waitForRegionLeader(t *testing.T, nodes []*nodeHarness, regionID regionpkg.ID) *nodeHarness {
+	var leader *nodeHarness
+	require.Eventually(t, func() bool {
+		leader = currentRegionLeader(nodes, regionID)
+		return leader != nil
+	}, 5*time.Second, 50*time.Millisecond)
+	return leader
+}
+
+func currentRegionLeader(nodes []*nodeHarness, regionID regionpkg.ID) *nodeHarness {
+	for _, n := range nodes {
+		if n.cluster == nil {
+			continue
+		}
+		rep := n.cluster.replica(regionID)
+		if rep != nil && rep.Node != nil && rep.Node.IsLeader() {
+			return n
+		}
+	}
+	return nil
+}
+
+func findRegionFollower(nodes []*nodeHarness, regionID regionpkg.ID, leaderID uint64) *nodeHarness {
+	for _, n := range nodes {
+		if n.cluster == nil || n.id == leaderID {
+			continue
+		}
+		rep := n.cluster.replica(regionID)
+		if rep != nil && rep.Node != nil && !rep.Node.IsLeader() {
+			return n
+		}
+	}
+	return nil
 }
 
 func waitForValue(t *testing.T, nodes []*nodeHarness, key, expected []byte) {
