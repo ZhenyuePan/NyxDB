@@ -1,10 +1,6 @@
 package index
 
-import (
-	"hash/fnv"
-
-	"nyxdb/internal/layers/engine/data"
-)
+import "nyxdb/internal/layers/engine/data"
 
 // Sharded wraps multiple Indexer instances to reduce contention.
 type Sharded struct {
@@ -24,9 +20,29 @@ func NewSharded(shardCount int, factory func() Indexer) *Sharded {
 }
 
 func (s *Sharded) shardFor(key []byte) int {
-	h := fnv.New32a()
-	_, _ = h.Write(key)
-	return int(h.Sum32()) % len(s.shards)
+	count := len(s.shards)
+	if count == 1 {
+		return 0
+	}
+	if len(key) == 0 {
+		return 0
+	}
+	// Use the first up to two bytes to preserve key ordering while routing.
+	used := 2
+	if len(key) < used {
+		used = len(key)
+	}
+	var space int
+	for i := 0; i < used; i++ {
+		space = (space << 8) | int(key[i])
+	}
+	// Normalize into [0, count).
+	maxValue := 1 << (8 * used)
+	idx := space * count / maxValue
+	if idx >= count {
+		idx = count - 1
+	}
+	return idx
 }
 
 func (s *Sharded) Put(key []byte, pos *data.LogRecordPos) *data.LogRecordPos {

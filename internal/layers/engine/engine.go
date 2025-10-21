@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gofrs/flock"
 )
@@ -43,6 +44,10 @@ type DB struct {
 	readTxnMu       sync.Mutex
 	activeReadTxns  map[uint64]uint64
 	nextReadTxnID   uint64
+	groupCommitCfg  groupCommitConfig
+	flushQueue      chan *flushRequest
+	flushStop       chan struct{}
+	flushWg         sync.WaitGroup
 }
 
 type logEntry struct {
@@ -57,6 +62,26 @@ type ReplicatedOp struct {
 	Value  []byte
 	Delete bool
 }
+
+type flushRequest struct {
+	bytes       int64
+	requireSync bool
+	done        chan error
+}
+
+type groupCommitConfig struct {
+	enabled         bool
+	maxBatchEntries int
+	maxBatchBytes   int64
+	maxWait         time.Duration
+}
+
+const (
+	defaultFlushQueueSize        = 1024
+	defaultGroupCommitMaxEntries = 16
+	defaultGroupCommitMaxBytes   = 1 << 20
+	defaultGroupCommitMaxWait    = 2 * time.Millisecond
+)
 
 func (db *DB) diagf(format string, args ...interface{}) {
 	if !db.options.EnableDiagnostics {
@@ -131,6 +156,7 @@ func Open(options Options) (*DB, error) {
 		fileLock:       fileLock,
 		activeReadTxns: make(map[uint64]uint64),
 	}
+	db.groupCommitCfg = normalizeGroupCommitOptions(options.GroupCommit)
 
 	// 加载 merge 数据目录
 	if err := db.loadMergeFiles(); err != nil {
@@ -161,6 +187,13 @@ func Open(options Options) (*DB, error) {
 		db.maxCommittedTs = db.seqNo
 	}
 
+	if db.groupCommitCfg.enabled {
+		db.flushQueue = make(chan *flushRequest, defaultFlushQueueSize)
+		db.flushStop = make(chan struct{})
+		db.flushWg.Add(1)
+		go db.runFlushLoop()
+	}
+
 	db.diagf("open complete: initial=%v seqNo=%d maxCommitted=%d", db.isInitial, db.seqNo, db.maxCommittedTs)
 
 	return db, nil
@@ -178,6 +211,7 @@ func (db *DB) Close() error {
 			panic("failed to close index")
 		}
 	}()
+	db.stopGroupCommit()
 	if db.activeFile == nil {
 		return nil
 	}
@@ -530,11 +564,11 @@ func (db *DB) commit(entries []*logEntry, commitTs uint64, forceSync bool, overr
 	}
 
 	db.mu.Lock()
-	defer db.mu.Unlock()
 
 	var ts uint64
 	if override {
 		if commitTs == 0 {
+			db.mu.Unlock()
 			return errors.New("invalid commit timestamp")
 		}
 		ts = commitTs
@@ -550,9 +584,11 @@ func (db *DB) commit(entries []*logEntry, commitTs uint64, forceSync bool, overr
 
 	localHeads := make(map[string]*data.LogRecordPos, len(entries))
 	writtenPositions := make([]*data.LogRecordPos, len(entries))
+	var totalBytes uint64
 
 	for i, entry := range entries {
 		if len(entry.key) == 0 {
+			db.mu.Unlock()
 			return ErrKeyIsEmpty
 		}
 
@@ -581,12 +617,14 @@ func (db *DB) commit(entries []*logEntry, commitTs uint64, forceSync bool, overr
 			},
 		}
 
-		pos, err := db.appendLogEntry(logEntry)
+		pos, size, err := db.appendLogEntry(logEntry)
 		if err != nil {
+			db.mu.Unlock()
 			return err
 		}
 		localHeads[keyStr] = pos
 		writtenPositions[i] = pos
+		totalBytes += uint64(size)
 	}
 
 	finishRecord := &data.LogEntry{
@@ -596,15 +634,19 @@ func (db *DB) commit(entries []*logEntry, commitTs uint64, forceSync bool, overr
 		},
 		Meta: data.LogMeta{CommitTs: ts},
 	}
-	if _, err := db.appendLogEntry(finishRecord); err != nil {
+	if _, size, err := db.appendLogEntry(finishRecord); err != nil {
+		db.mu.Unlock()
 		return err
+	} else {
+		totalBytes += uint64(size)
 	}
 
-	if forceSync {
-		if err := db.activeFile.Sync(); err != nil {
-			return err
-		}
-		db.bytesWrite = 0
+	requireSync := forceSync
+	if db.options.SyncWrites {
+		requireSync = true
+	}
+	if db.options.BytesPerSync > 0 && db.bytesWrite >= db.options.BytesPerSync {
+		requireSync = true
 	}
 
 	for idx, entry := range entries {
@@ -617,6 +659,11 @@ func (db *DB) commit(entries []*logEntry, commitTs uint64, forceSync bool, overr
 		db.maxCommittedTs = ts
 	}
 	db.diagf("commit end ts=%d override=%v", ts, override)
+	db.mu.Unlock()
+
+	if err := db.enqueueFlush(uint32(totalBytes), requireSync); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -676,12 +723,12 @@ func (db *DB) GetVersion(key []byte, readTs uint64) ([]byte, bool, error) {
 }
 
 // 追加写数据到活跃文件中
-func (db *DB) appendLogEntry(entry *data.LogEntry) (*data.LogRecordPos, error) {
+func (db *DB) appendLogEntry(entry *data.LogEntry) (*data.LogRecordPos, uint32, error) {
 	// 判断当前活跃数据文件是否存在，因为数据库在没有写入的时候是没有文件生成的
 	// 如果为空则初始化数据文件
 	if db.activeFile == nil {
 		if err := db.setActiveDataFile(); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 
@@ -690,8 +737,8 @@ func (db *DB) appendLogEntry(entry *data.LogEntry) (*data.LogRecordPos, error) {
 	// 如果写入的数据已经到达了活跃文件的阈值，则关闭活跃文件，并打开新的文件
 	if db.activeFile.WriteOff+size > db.options.DataFileSize {
 		// 先持久化数据文件，保证已有的数据持久到磁盘当中
-		if err := db.activeFile.Sync(); err != nil {
-			return nil, err
+		if err := db.syncActiveFileLocked(); err != nil {
+			return nil, 0, err
 		}
 
 		// 当前活跃文件转换为旧的数据文件
@@ -699,34 +746,20 @@ func (db *DB) appendLogEntry(entry *data.LogEntry) (*data.LogRecordPos, error) {
 
 		// 打开新的数据文件
 		if err := db.setActiveDataFile(); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 
 	writeOff := db.activeFile.WriteOff
 	if err := db.activeFile.Write(encRecord); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	db.bytesWrite += uint(size)
-	// 根据用户配置决定是否持久化
-	var needSync = db.options.SyncWrites
-	if !needSync && db.options.BytesPerSync > 0 && db.bytesWrite >= db.options.BytesPerSync {
-		needSync = true
-	}
-	if needSync {
-		if err := db.activeFile.Sync(); err != nil {
-			return nil, err
-		}
-		// 清空累计值
-		if db.bytesWrite > 0 {
-			db.bytesWrite = 0
-		}
-	}
 
 	// 构造内存索引信息
 	pos := &data.LogRecordPos{Fid: db.activeFile.FileId, Offset: writeOff, Size: uint32(size)}
-	return pos, nil
+	return pos, uint32(size), nil
 }
 
 // 设置当前活跃文件
@@ -743,6 +776,191 @@ func (db *DB) setActiveDataFile() error {
 	}
 	db.activeFile = dataFile
 	return nil
+}
+
+func (db *DB) enqueueFlush(bytes uint32, requireSync bool) error {
+	if !db.groupCommitCfg.enabled {
+		if requireSync {
+			db.mu.Lock()
+			err := db.syncActiveFileLocked()
+			db.mu.Unlock()
+			return err
+		}
+		return nil
+	}
+
+	req := &flushRequest{
+		bytes:       int64(bytes),
+		requireSync: requireSync,
+	}
+	if req.bytes == 0 {
+		req.bytes = int64(bytes)
+	}
+	if requireSync {
+		req.done = make(chan error, 1)
+	}
+
+	db.flushQueue <- req
+
+	if req.done != nil {
+		return <-req.done
+	}
+	return nil
+}
+
+func (db *DB) runFlushLoop() {
+	defer db.flushWg.Done()
+
+	cfg := db.groupCommitCfg
+	var (
+		batch            []*flushRequest
+		batchBytes       int64
+		forceSyncPending bool
+		timer            *time.Timer
+		timerC           <-chan time.Time
+	)
+
+	stopTimer := func() {
+		if timer != nil {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer = nil
+			timerC = nil
+		}
+	}
+
+	for {
+		if cfg.maxWait > 0 {
+			if len(batch) > 0 {
+				if timer == nil {
+					timer = time.NewTimer(cfg.maxWait)
+				} else {
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					timer.Reset(cfg.maxWait)
+				}
+				timerC = timer.C
+			} else {
+				stopTimer()
+			}
+		} else {
+			stopTimer()
+		}
+
+		select {
+		case <-db.flushStop:
+			if len(batch) > 0 {
+				db.flushBatch(batch)
+			}
+			stopTimer()
+			return
+		case req, ok := <-db.flushQueue:
+			if !ok {
+				if len(batch) > 0 {
+					db.flushBatch(batch)
+				}
+				stopTimer()
+				return
+			}
+			batch = append(batch, req)
+			batchBytes += req.bytes
+			if req.requireSync {
+				forceSyncPending = true
+			}
+			flushNow := false
+			if cfg.maxBatchEntries > 0 && len(batch) >= cfg.maxBatchEntries {
+				flushNow = true
+			} else if cfg.maxBatchBytes > 0 && batchBytes >= cfg.maxBatchBytes {
+				flushNow = true
+			} else if forceSyncPending && cfg.maxWait == 0 {
+				flushNow = true
+			}
+			if flushNow {
+				stopTimer()
+				db.flushBatch(batch)
+				batch = nil
+				batchBytes = 0
+				forceSyncPending = false
+			}
+		case <-timerC:
+			if len(batch) > 0 {
+				db.flushBatch(batch)
+				batch = nil
+				batchBytes = 0
+				forceSyncPending = false
+			}
+			stopTimer()
+		}
+	}
+}
+
+func (db *DB) flushBatch(batch []*flushRequest) {
+	if len(batch) == 0 {
+		return
+	}
+	db.mu.Lock()
+	err := db.syncActiveFileLocked()
+	db.mu.Unlock()
+	for _, req := range batch {
+		if req.done != nil {
+			req.done <- err
+		}
+	}
+}
+
+func (db *DB) syncActiveFileLocked() error {
+	if db.activeFile == nil {
+		db.bytesWrite = 0
+		return nil
+	}
+	if err := db.activeFile.Sync(); err != nil {
+		return err
+	}
+	db.bytesWrite = 0
+	return nil
+}
+
+func (db *DB) stopGroupCommit() {
+	if !db.groupCommitCfg.enabled {
+		return
+	}
+	if db.flushQueue != nil {
+		close(db.flushQueue)
+	}
+	if db.flushStop != nil {
+		close(db.flushStop)
+	}
+	db.flushWg.Wait()
+	db.groupCommitCfg.enabled = false
+	db.flushQueue = nil
+	db.flushStop = nil
+}
+
+func normalizeGroupCommitOptions(opts GroupCommitOptions) groupCommitConfig {
+	cfg := groupCommitConfig{
+		enabled:         opts.Enabled,
+		maxBatchEntries: opts.MaxBatchEntries,
+		maxBatchBytes:   opts.MaxBatchBytes,
+		maxWait:         opts.MaxWait,
+	}
+	if cfg.maxBatchEntries <= 0 {
+		cfg.maxBatchEntries = defaultGroupCommitMaxEntries
+	}
+	if cfg.maxBatchBytes <= 0 {
+		cfg.maxBatchBytes = defaultGroupCommitMaxBytes
+	}
+	if cfg.maxWait < 0 {
+		cfg.maxWait = 0
+	}
+	return cfg
 }
 
 // 从磁盘中加载数据文件

@@ -25,16 +25,15 @@ func NewSkipList() *SkipList {
 
 // Put 向索引中存储 key 对应的数据位置信息
 func (sl *SkipList) Put(key []byte, pos *data.LogRecordPos) *data.LogRecordPos {
-	// 先用读锁获取旧值
+	sl.lock.Lock()
+	defer sl.lock.Unlock()
+
 	elem := sl.list.Get(key)
 	var oldPos *data.LogRecordPos
 	if elem != nil {
 		oldPos, _ = elem.Value.(*data.LogRecordPos)
 	}
-	// 然后用写锁设置新值
-	sl.lock.Lock()
 	sl.list.Set(key, pos)
-	sl.lock.Unlock()
 
 	return oldPos
 }

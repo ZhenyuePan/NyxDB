@@ -195,7 +195,7 @@ func TestDB_RecoverSkipUnfinishedTxn(t *testing.T) {
 
 	// 模拟写入但未完成的事务（没有 TxnFinished）
 	db.mu.Lock()
-	_, err = db.appendLogEntry(&data.LogEntry{
+	_, _, err = db.appendLogEntry(&data.LogEntry{
 		Record: data.LogRecord{
 			Key:   logRecordKeyWithSeq([]byte("uncommitted"), 1),
 			Value: []byte("value"),
@@ -219,6 +219,30 @@ func TestDB_RecoverSkipUnfinishedTxn(t *testing.T) {
 
 	_, err = db2.Get([]byte("uncommitted"))
 	assert.Equal(t, ErrKeyNotFound, err)
+}
+
+func TestDB_GroupCommitSyncWrites(t *testing.T) {
+	opts := DefaultOptions
+	dir, _ := os.MkdirTemp("", "bitcask-go-group-commit")
+	opts.DirPath = dir
+	opts.SyncWrites = true
+	opts.GroupCommit.Enabled = true
+	opts.GroupCommit.MaxWait = 0
+	opts.GroupCommit.MaxBatchEntries = 4
+	opts.GroupCommit.MaxBatchBytes = 1 << 10
+
+	db, err := Open(opts)
+	assert.NoError(t, err)
+	defer func() {
+		assert.NoError(t, db.Close())
+	}()
+
+	err = db.Put([]byte("foo"), []byte("bar"))
+	assert.NoError(t, err)
+
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	assert.Equal(t, uint(0), db.bytesWrite)
 }
 
 func TestDB_MergeRespectSafePoint(t *testing.T) {

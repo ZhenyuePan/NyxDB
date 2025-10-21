@@ -248,7 +248,7 @@ func (db *DB) MergeWithOptions(opts MergeOptions) error {
 				logEntry.Meta.PrevFid = prevPos.Fid
 			}
 
-			pos, err := mergeDB.appendLogEntry(logEntry)
+			pos, _, err := mergeDB.appendLogEntry(logEntry)
 			if err != nil {
 				return err
 			}

@@ -32,6 +32,9 @@ type Options struct {
 
 	// 是否启用诊断日志
 	EnableDiagnostics bool
+
+	// GroupCommit 控制 fsync 组提交行为。
+	GroupCommit GroupCommitOptions
 }
 
 // ClusterOptions 集群配置选项
@@ -87,10 +90,21 @@ type WriteBatchOptions struct {
 	SyncWrites bool
 }
 
+// GroupCommitOptions 配置 fsync 组提交。
+type GroupCommitOptions struct {
+	// 是否启用组提交
+	Enabled bool
+	// 每次组提交聚合的最大提交数
+	MaxBatchEntries int
+	// 每次组提交聚合的最大字节数
+	MaxBatchBytes int64
+	// 组提交的最大等待时间
+	MaxWait time.Duration
+}
+
 type IndexerType = int8
 
 const (
-	// BTree 索引
 	Btree IndexerType = iota
 	SkipList
 	AdaptiveRadix
@@ -106,6 +120,12 @@ var DefaultOptions = Options{
 	MMapAtStartup:      true,
 	DataFileMergeRatio: 0.5,
 	ClusterConfig:      nil, // 默认不启用集群
+	GroupCommit: GroupCommitOptions{
+		Enabled:         true,
+		MaxBatchEntries: 16,
+		MaxBatchBytes:   1 << 20, // 1MB
+		MaxWait:         2 * time.Millisecond,
+	},
 }
 
 var DefaultIteratorOptions = IteratorOptions{
