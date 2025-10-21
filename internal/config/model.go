@@ -115,7 +115,8 @@ func (c *ServerConfig) EngineOptions() db.Options {
 }
 
 func (c *ServerConfig) GRPCConfig() grpcserver.Config {
-	tracingEnabled := c.Observability.Tracing.Endpoint != ""
+	tracingCfg := c.Observability.Tracing
+	tracingEnabled := tracingCfg.Endpoint != "" || tracingCfg.SampleRatio > 0
 	return grpcserver.Config{Address: c.GRPC.Address, EnableTracing: tracingEnabled}
 }
 

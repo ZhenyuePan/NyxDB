@@ -46,7 +46,7 @@ func main() {
 	}
 
 	tracingCfg := cfg.TracingConfig()
-	if tracingCfg.Endpoint != "" {
+	if tracingCfg.Endpoint != "" || tracingCfg.SampleRatio > 0 {
 		shutdownTracer, err := tracing.Setup(ctx, tracing.Config{
 			Endpoint:    tracingCfg.Endpoint,
 			Insecure:    tracingCfg.Insecure,

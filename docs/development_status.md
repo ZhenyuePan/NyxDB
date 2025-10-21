@@ -37,10 +37,30 @@
   - Commit：TSO 分配 CommitTS → `EngineStore.Apply(commitTs, ops)` 落盘 → 释放锁。
 - 引擎层扩展：`LatestCommitTs`、`GetVersion`（按 ReadTS 读版本）对接 MVCC。
 
-6) 集成测试（关键）
+6) 引擎与索引改进
+- 组提交（Group Commit）：引擎写入统一走受控组提交，单次提交末尾一次 fsync；新增批量阈值（条数/字节/最大等待）与后台 flush 协程，兼容 `SyncWrites`/`BytesPerSync`。
+- Sharded BTree 调整为“范围路由”分片，分散热点同时保持范围有序；修正 SkipList 在高并发 Put 下的锁竞争（单写锁覆盖 Get+Set）。
+- 索引覆盖面测试与基准：补齐 ART 单测，新增 BTree/SkipList/ART/Sharded 的并发基准。
+
+7) 可观测性与链路追踪
+- Prometheus 指标保持；新增 OpenTelemetry（OTLP）接入与 gRPC 拦截器，可通过配置启用 traces，默认关闭。
+
+8) 集成测试（关键）
 - 单机多 group：`TestClusterSingleNodeMultipleRegions`。
 - 多机多 group：`TestClusterMultiNodeMultipleRegions`（chaos 网络，3 节点，Region leader 选举 & 读写验证）。
 - 其他：线性一致读、成员持久化、快照触发、混沌稳定性等均有覆盖。
+
+## 基准与现状指标
+
+- 引擎内存索引（并发场景，ns/op，详细见 `test_result/index_structures_comparison.txt`）
+  - Put：ART ≈ 149ns < Sharded ≈ 225ns < BTree ≈ 249ns < SkipList ≈ 372ns
+  - Get：ART ≈ 35ns < BTree/SkipList ≈ 42ns < Sharded ≈ 45ns
+
+- 集群端到端（单节点，单/多 Region，见 `test_result/benchmark_cluster.txt`）
+  - Put：单 Region ≈ 3.50ms/op；多 Region ≈ 3.40ms/op
+  - Get：单/多 Region ≈ 1.19µs/op
+
+说明：多 Region 写入略优，主要是路由/并发影响；读取在两种场景差异不大。
 
 ## 待办清单（按 MVP 优先级）
 
@@ -64,6 +84,7 @@ P1（增强与可用性）
   - 在 PD 中根据简单规则生成建议（如缺 leader 时 TransferLeader），Cluster 仅记录/打印，为后续闭环做准备。
 - 观测：
   - 事务指标（TSO 请求数、锁数量、写冲突次数），Prometheus 暴露；PD/Cluster 关键事件结构化日志。
+  - 链路追踪：在关键路径按需打点（gRPC/KV、Raft Propose/Ready/Apply、Engine commit/sync），结合采样率控制与后端（Jaeger/Tempo）。
 - 广播可靠性：
   - `members` 地址用于 gRPC 拨号的前提说明（MVP 要求 `nodeAddress == grpc.address`），必要时引入独立 gRPC 地址字段或由 PD 提供。
 
@@ -85,7 +106,7 @@ P2（后续扩展）
 
 2) 多机多 group（集成测试）
 - 运行：
-  - `go test ./internal/cluster -run TestClusterMultiNodeMultipleRegions -v`
+ - `go test ./internal/cluster -run TestClusterMultiNodeMultipleRegions -v`
 - 逻辑：3 节点 chaos 网络，Leader 创建新 Region 后在其他节点 `EnsureRegionReplica`，等待该 Region leader 选举并验证写读与 not leader 错误。
 
 3) PD/TSO 验证
@@ -98,14 +119,33 @@ P2（后续扩展）
   - 读写：`nyxdb.api.KV/Put`、`KV/Get`。
   - 查看 Region 列表（如 PD 已接入）：`nyxdb.api.PD/ListRegions` / `GetRegionsByStore`。
 
+5) 集成测试传输层
+- 单节点与多 Region 测试已切换为 gRPC 传输（测试内启动内嵌 gRPC server 并注册 Raft 传输服务）。
+- 多节点 Chaos 测试仍使用模拟网络传输。
+
 ## 注意事项与已知限制
 
 - KV 请求暂未携带 Region Epoch，服务端无法返回 Wrong Epoch，当前走 key→Region 路由；客户端需根据 not leader 错误做重试。
 - 广播建副本默认用 `members` 中的地址拨号，MVP 需保证 `cluster.nodeAddress == grpc.address`；否则可在每个节点手动调用 `CreateRegionReplica`。
 - `RegionsByStore` 的返回在代码中已简化为切片（无 error），gRPC 层仍是标准 RPC 错误语义。
 - 事务锁表为本进程内存数据结构，缺少 TTL/持久化/分布式协商；P0 里需要加清理与最小回滚策略。
-- engine的index有个读锁可能是冗余
-- 我不确定现有的MVCC是否为最佳方案
+- 当前 Engine 的写提交为单线程临界区（全局互斥 + 组提交），高并发写仍可能受限；建议继续迭代写批与并行 apply。
+- 范围路由的 Sharded BTree 能分散热点，但 shard 内仍为单棵 BTree 的 RWMutex；需结合热点统计做动态分裂或采用更细粒度结构。
+- MVCC 读路径需回溯版本链，建议结合热点 key 的最新版本缓存与更快的快照读取策略。
+
+## 配置样例（Tracing）
+
+在 `configs/server.example.yaml` 中：
+
+```
+observability:
+  metricsAddress: ""
+  tracing:
+    endpoint: ""       # OTLP collector，如 "127.0.0.1:4317"；为空则禁用
+    insecure: true
+    serviceName: nyxdb-server
+    sampleRatio: 1.0    # 采样比率，0<r<1 表示按比例采样
+```
 
 ## 代码入口与关键文件
 
