@@ -12,6 +12,7 @@ import (
 	"nyxdb/internal/config"
 	db "nyxdb/internal/layers/engine"
 	"nyxdb/internal/layers/observability/metrics"
+	"nyxdb/internal/layers/observability/tracing"
 	grpcserver "nyxdb/internal/server/grpc"
 )
 
@@ -42,6 +43,24 @@ func main() {
 			log.Fatalf("failed to attach pd client: %v", err)
 		}
 		log.Printf("pd client attached to %s", pdAddr)
+	}
+
+	tracingCfg := cfg.TracingConfig()
+	if tracingCfg.Endpoint != "" {
+		shutdownTracer, err := tracing.Setup(ctx, tracing.Config{
+			Endpoint:    tracingCfg.Endpoint,
+			Insecure:    tracingCfg.Insecure,
+			ServiceName: tracingCfg.ServiceName,
+			SampleRatio: tracingCfg.SampleRatio,
+		})
+		if err != nil {
+			log.Fatalf("failed to setup tracing: %v", err)
+		}
+		defer func() {
+			if err := shutdownTracer(context.Background()); err != nil {
+				log.Printf("tracing shutdown error: %v", err)
+			}
+		}()
 	}
 
 	metricsAddr := cfg.MetricsAddress()

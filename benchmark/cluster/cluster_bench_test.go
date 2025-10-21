@@ -1,6 +1,7 @@
 package clusterbench
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -49,7 +50,7 @@ func (ctx *benchContext) prefill(b *testing.B) {
 	ctx.prefillOnce.Do(func() {
 		for i := 0; i < prefillKeyCount; i++ {
 			key := ctx.nextKey(uint64(i))
-			if err := ctx.cluster.Put(key, []byte("value")); err != nil {
+			if err := putWithRetry(ctx.cluster, key, []byte("value")); err != nil {
 				b.Fatalf("prefill put: %v", err)
 			}
 		}
@@ -145,7 +146,7 @@ func benchmarkClusterPut(b *testing.B, ctx *benchContext) {
 	for i := 0; i < b.N; i++ {
 		id := atomic.AddUint64(&ctx.keyCounter, 1)
 		key := ctx.nextKey(id)
-		if err := ctx.cluster.Put(key, []byte("value")); err != nil {
+		if err := putWithRetry(ctx.cluster, key, []byte("value")); err != nil {
 			b.Fatalf("put: %v", err)
 		}
 	}
@@ -161,6 +162,24 @@ func benchmarkClusterGet(b *testing.B, ctx *benchContext) {
 			b.Fatalf("get: %v", err)
 		}
 	}
+}
+
+func putWithRetry(cl *cluster.Cluster, key, value []byte) error {
+	const (
+		maxRetry = 10
+		backoff  = 20 * time.Millisecond
+	)
+	for i := 0; i < maxRetry; i++ {
+		if err := cl.Put(key, value); err != nil {
+			if errors.Is(err, cluster.ErrNotLeader) {
+				time.Sleep(backoff)
+				continue
+			}
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("put retry exceeded for key %q", key)
 }
 
 func BenchmarkClusterPutSingleRegion(b *testing.B) {

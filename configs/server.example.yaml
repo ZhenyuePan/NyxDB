@@ -31,3 +31,9 @@ pd:
 observability:
   # Expose Prometheus metrics on this address. Leave empty to disable.
   metricsAddress: ""
+  tracing:
+    # OTLP collector endpoint (host:port). Leave empty to disable tracing.
+    endpoint: ""
+    insecure: true
+    serviceName: nyxdb-server
+    sampleRatio: 1.0

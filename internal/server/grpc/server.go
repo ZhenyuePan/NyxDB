@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"nyxdb/internal/cluster"
 
 	"google.golang.org/grpc"
@@ -14,7 +15,8 @@ import (
 
 // Config holds gRPC server configuration.
 type Config struct {
-	Address string
+	Address       string
+	EnableTracing bool
 }
 
 // Server wraps the gRPC services that expose KV/Admin APIs.
@@ -31,10 +33,17 @@ func New(cfg Config, cl *cluster.Cluster, binder ServiceBinder) *Server {
 	if binder == nil {
 		binder = &noopBinder{}
 	}
+	var opts []grpc.ServerOption
+	if cfg.EnableTracing {
+		opts = append(opts,
+			grpc.UnaryInterceptor(otelgrpc.UnaryServerInterceptor()),
+			grpc.StreamInterceptor(otelgrpc.StreamServerInterceptor()),
+		)
+	}
 	s := &Server{
 		cfg:     cfg,
 		cluster: cl,
-		srv:     grpc.NewServer(),
+		srv:     grpc.NewServer(opts...),
 		binder:  binder,
 		health:  health.NewServer(),
 	}

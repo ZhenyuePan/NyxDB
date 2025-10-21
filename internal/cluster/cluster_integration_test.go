@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -20,7 +21,63 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/raft/v3/raftpb"
+	"google.golang.org/grpc"
 )
+
+type testClusterHandle struct {
+	Cluster *Cluster
+	Engine  *db.DB
+	grpcSrv *grpc.Server
+	lis     net.Listener
+	once    sync.Once
+}
+
+func (h *testClusterHandle) Close() {
+	h.once.Do(func() {
+		if h.grpcSrv != nil {
+			h.grpcSrv.GracefulStop()
+		}
+		if h.lis != nil {
+			_ = h.lis.Close()
+		}
+		if h.Cluster != nil {
+			_ = h.Cluster.Stop()
+		}
+		if h.Engine != nil {
+			_ = h.Engine.Close()
+		}
+	})
+}
+
+func startClusterWithGRPC(t *testing.T, nodeID uint64, opts db.Options) *testClusterHandle {
+	if opts.ClusterConfig == nil {
+		t.Fatalf("ClusterConfig must be set for gRPC transport")
+	}
+	engine, err := db.Open(opts)
+	require.NoError(t, err)
+
+	cl, err := NewClusterWithTransport(nodeID, opts, engine, nil)
+	require.NoError(t, err)
+
+	lis, err := net.Listen("tcp", opts.ClusterConfig.NodeAddress)
+	require.NoError(t, err)
+	grpcSrv := grpc.NewServer()
+	rafttransport.RegisterGRPCTransportServer(grpcSrv, cl.RaftRouter())
+	go func() {
+		_ = grpcSrv.Serve(lis)
+	}()
+	require.NoError(t, cl.Start())
+
+	h := &testClusterHandle{
+		Cluster: cl,
+		Engine:  engine,
+		grpcSrv: grpcSrv,
+		lis:     lis,
+	}
+	// Ensure cleanup even if test exits early.
+	t.Cleanup(h.Close)
+	return h
+}
 
 func TestClusterLinearizableRead(t *testing.T) {
 	dir := t.TempDir()
@@ -33,13 +90,9 @@ func TestClusterLinearizableRead(t *testing.T) {
 		ClusterAddresses: []string{"1@127.0.0.1:9001"},
 	}
 
-	engine, err := db.Open(opts)
-	require.NoError(t, err)
-
-	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
-	require.NoError(t, err)
-	require.NoError(t, cl.Start())
-	defer func() { _ = cl.Stop() }()
+	clusterHandle := startClusterWithGRPC(t, 1, opts)
+	cl := clusterHandle.Cluster
+	engine := clusterHandle.Engine
 
 	require.Eventually(t, func() bool { return cl.IsLeader() }, 5*time.Second, 50*time.Millisecond)
 
@@ -89,20 +142,13 @@ func TestClusterRegistersRegionsWithPD(t *testing.T) {
 		ClusterAddresses: []string{"1@127.0.0.1:9101"},
 	}
 
-	engine, err := db.Open(opts)
-	require.NoError(t, err)
-
-	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
-	require.NoError(t, err)
-	require.NoError(t, cl.Start())
-	t.Cleanup(func() {
-		_ = cl.Stop()
-		_ = engine.Close()
-	})
+	clusterHandle := startClusterWithGRPC(t, 1, opts)
+	cl := clusterHandle.Cluster
 
 	require.Eventually(t, func() bool { return cl.IsLeader() }, 5*time.Second, 50*time.Millisecond)
 
 	svc := pd.NewService()
+	var err error
 	cl.AttachPD(svc, time.Second)
 
 	require.Eventually(t, func() bool {
@@ -148,16 +194,8 @@ func TestClusterSingleNodeMultipleRegions(t *testing.T) {
 		ClusterAddresses: []string{"1@127.0.0.1:9301"},
 	}
 
-	engine, err := db.Open(opts)
-	require.NoError(t, err)
-
-	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
-	require.NoError(t, err)
-	require.NoError(t, cl.Start())
-	t.Cleanup(func() {
-		_ = cl.Stop()
-		_ = engine.Close()
-	})
+	clusterHandle := startClusterWithGRPC(t, 1, opts)
+	cl := clusterHandle.Cluster
 
 	require.Eventually(t, func() bool { return cl.IsLeader() }, 5*time.Second, 50*time.Millisecond)
 
@@ -297,13 +335,11 @@ func TestClusterSyncRegionsFromPD(t *testing.T) {
 		ClusterAddresses: []string{"1@127.0.0.1:9201"},
 	}
 
-	engine, err := db.Open(opts)
-	require.NoError(t, err)
-
-	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
-	require.NoError(t, err)
+	clusterHandle := startClusterWithGRPC(t, 1, opts)
+	cl := clusterHandle.Cluster
 
 	svc := pd.NewService()
+	var err error
 
 	defaultPeerID := peerIDFor(regionmgr.DefaultRegionID, 1)
 	defaultRegion := regionpkg.Region{
@@ -353,10 +389,6 @@ func TestClusterSyncRegionsFromPD(t *testing.T) {
 	require.Len(t, localRegionTwo.Peers, 2)
 
 	require.NoError(t, cl.Start())
-	defer func() {
-		_ = cl.Stop()
-		_ = engine.Close()
-	}()
 }
 
 func TestClusterMembershipPersistence(t *testing.T) {
@@ -370,12 +402,8 @@ func TestClusterMembershipPersistence(t *testing.T) {
 		ClusterAddresses: []string{"1@127.0.0.1:9001"},
 	}
 
-	engine, err := db.Open(opts)
-	require.NoError(t, err)
-
-	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
-	require.NoError(t, err)
-	require.NoError(t, cl.Start())
+	clusterHandle := startClusterWithGRPC(t, 1, opts)
+	cl := clusterHandle.Cluster
 
 	require.Eventually(t, func() bool { return cl.IsLeader() }, 5*time.Second, 50*time.Millisecond)
 
@@ -393,16 +421,10 @@ func TestClusterMembershipPersistence(t *testing.T) {
 		return bytes.Contains(data, []byte("127.0.0.1:9002"))
 	}, 5*time.Second, 50*time.Millisecond)
 
-	require.NoError(t, cl.Stop())
+	clusterHandle.Close()
 
-	engine2, err := db.Open(opts)
-	require.NoError(t, err)
-	defer engine2.Close()
-
-	cl2, err := NewClusterWithTransport(1, opts, engine2, rafttransport.NewNoopTransport())
-	require.NoError(t, err)
-	require.NoError(t, cl2.Start())
-	defer func() { _ = cl2.Stop() }()
+	clusterHandle2 := startClusterWithGRPC(t, 1, opts)
+	cl2 := clusterHandle2.Cluster
 
 	require.Eventually(t, func() bool {
 		return cl2.Members()[2] == "127.0.0.1:9002"
@@ -420,13 +442,8 @@ func TestClusterTriggerSnapshot(t *testing.T) {
 		ClusterAddresses: []string{"1@127.0.0.1:19001"},
 	}
 
-	engine, err := db.Open(opts)
-	require.NoError(t, err)
-
-	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
-	require.NoError(t, err)
-	require.NoError(t, cl.Start())
-	defer func() { _ = cl.Stop() }()
+	clusterHandle := startClusterWithGRPC(t, 1, opts)
+	cl := clusterHandle.Cluster
 
 	require.Eventually(t, func() bool { return cl.IsLeader() }, 5*time.Second, 50*time.Millisecond)
 
@@ -633,9 +650,23 @@ func TestClusterPDHeartbeatWithRegions(t *testing.T) {
 	engine, err := db.Open(opts)
 	require.NoError(t, err)
 
-	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
+	cl, err := NewClusterWithTransport(1, opts, engine, nil)
 	require.NoError(t, err)
-	defer func() { _ = cl.Stop() }()
+
+	lis, err := net.Listen("tcp", opts.ClusterConfig.NodeAddress)
+	require.NoError(t, err)
+	grpcSrv := grpc.NewServer()
+	rafttransport.RegisterGRPCTransportServer(grpcSrv, cl.RaftRouter())
+	go func() {
+		_ = grpcSrv.Serve(lis)
+	}()
+	clusterHandle := &testClusterHandle{
+		Cluster: cl,
+		Engine:  engine,
+		grpcSrv: grpcSrv,
+		lis:     lis,
+	}
+	t.Cleanup(clusterHandle.Close)
 
 	// Add a second static region before start so it boots with its own Raft replica.
 	region, err := cl.CreateStaticRegion(regionpkg.KeyRange{Start: []byte("m"), End: []byte("z")})
@@ -686,13 +717,8 @@ func TestClusterMultiRegionRouting(t *testing.T) {
 		ClusterAddresses: []string{"1@127.0.0.1:29001"},
 	}
 
-	engine, err := db.Open(opts)
-	require.NoError(t, err)
-
-	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
-	require.NoError(t, err)
-	require.NoError(t, cl.Start())
-	defer func() { _ = cl.Stop() }()
+	clusterHandle := startClusterWithGRPC(t, 1, opts)
+	cl := clusterHandle.Cluster
 
 	require.Eventually(t, func() bool { return cl.IsLeader() }, 5*time.Second, 50*time.Millisecond)
 
@@ -745,7 +771,7 @@ func TestClusterDiagnostics(t *testing.T) {
 	engine, err := db.Open(opts)
 	require.NoError(t, err)
 
-	cl, err := NewClusterWithTransport(1, opts, engine, rafttransport.NewNoopTransport())
+	cl, err := NewClusterWithTransport(1, opts, engine, nil)
 	require.NoError(t, err)
 	cl.diagnosticsInterval = 20 * time.Millisecond
 	updates := make(chan Diagnostics, 2)
@@ -755,8 +781,22 @@ func TestClusterDiagnostics(t *testing.T) {
 		default:
 		}
 	})
+
+	lis, err := net.Listen("tcp", opts.ClusterConfig.NodeAddress)
+	require.NoError(t, err)
+	grpcSrv := grpc.NewServer()
+	rafttransport.RegisterGRPCTransportServer(grpcSrv, cl.RaftRouter())
+	go func() {
+		_ = grpcSrv.Serve(lis)
+	}()
+	clusterHandle := &testClusterHandle{
+		Cluster: cl,
+		Engine:  engine,
+		grpcSrv: grpcSrv,
+		lis:     lis,
+	}
+	t.Cleanup(clusterHandle.Close)
 	require.NoError(t, cl.Start())
-	defer func() { _ = cl.Stop() }()
 
 	require.Eventually(t, func() bool { return cl.IsLeader() }, 5*time.Second, 50*time.Millisecond)
 	require.NoError(t, cl.Put([]byte("diag"), []byte("value")))
@@ -764,6 +804,11 @@ func TestClusterDiagnostics(t *testing.T) {
 	require.Eventually(t, func() bool {
 		d := cl.Diagnostics()
 		return d.CommittedIndex >= 1 && d.AppliedIndex >= 1
+	}, 5*time.Second, 50*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		d := cl.Diagnostics()
+		return d.LastRaftIndex >= d.CommittedIndex
 	}, 5*time.Second, 50*time.Millisecond)
 
 	require.Eventually(t, func() bool {

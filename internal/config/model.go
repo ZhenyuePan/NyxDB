@@ -36,11 +36,20 @@ type ClusterConfig struct {
 }
 
 type ObservabilityConfig struct {
-	MetricsAddress string `yaml:"metricsAddress"`
+	MetricsAddress string        `yaml:"metricsAddress"`
+	Tracing        TracingConfig `yaml:"tracing"`
 }
 
 type GRPCConfig struct {
-	Address string `yaml:"address"`
+	Address       string `yaml:"address"`
+	EnableTracing bool   `yaml:"-"`
+}
+
+type TracingConfig struct {
+	Endpoint    string  `yaml:"endpoint"`
+	Insecure    bool    `yaml:"insecure"`
+	ServiceName string  `yaml:"serviceName"`
+	SampleRatio float64 `yaml:"sampleRatio"`
 }
 
 type PDConfig struct {
@@ -106,11 +115,16 @@ func (c *ServerConfig) EngineOptions() db.Options {
 }
 
 func (c *ServerConfig) GRPCConfig() grpcserver.Config {
-	return grpcserver.Config{Address: c.GRPC.Address}
+	tracingEnabled := c.Observability.Tracing.Endpoint != ""
+	return grpcserver.Config{Address: c.GRPC.Address, EnableTracing: tracingEnabled}
 }
 
 func (c *ServerConfig) MetricsAddress() string {
 	return c.Observability.MetricsAddress
+}
+
+func (c *ServerConfig) TracingConfig() TracingConfig {
+	return c.Observability.Tracing
 }
 
 func (c *ServerConfig) PDAddress() string {
