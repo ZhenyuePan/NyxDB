@@ -6,6 +6,8 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -72,6 +74,8 @@ func TestMain(m *testing.M) {
 	zap.ReplaceGlobals(zap.NewNop())
 	raft.SetLogger(&raft.DefaultLogger{Logger: log.New(io.Discard, "", 0)})
 
+	cleanupResidualBenchDirs()
+
 	singleCtx = mustCreateContext("single", false, nil)
 	multiCtx = mustCreateContext("multi", true, []regionpkg.KeyRange{
 		{Start: []byte("a"), End: []byte("m")},
@@ -84,6 +88,21 @@ func TestMain(m *testing.M) {
 	multiCtx.stop()
 
 	os.Exit(code)
+}
+
+func cleanupResidualBenchDirs() {
+	tmp := os.TempDir()
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "nyxdb-bench-") {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(tmp, name))
+	}
 }
 
 func mustCreateContext(name string, multi bool, ranges []regionpkg.KeyRange) benchContext {

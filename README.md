@@ -19,12 +19,14 @@ NyxDB 当前聚焦一个可运行的最小 MVP：单 Raft Group 的强一致 KV 
 - 需求：Go 1.21+（仅当重新生成 gRPC 代码时需要 `protoc`）
 - 启动服务：
   ```bash
-  go run cmd/nyxdb-server/main.go -config configs/server.example.yaml
+  # 单节点快速体验
+  go run cmd/nyxdb-server/main.go -config configs/server.single.yaml
   ```
+  > 若要模拟多节点，请为每个节点准备独立的数据目录与配置，参考 `configs/server.example.yaml` 中的多副本地址列表。
 - 写入/读取（线性一致）：
   ```bash
-  nyxdb-cli kv put --addr 127.0.0.1:10001 --key a --value b
-  nyxdb-cli kv get --addr 127.0.0.1:10001 --key a
+  go run cmd/nyxdb-cli/main.go kv put --addr 127.0.0.1:10001 --key a --value b
+  go run cmd/nyxdb-cli/main.go kv get --addr 127.0.0.1:10001 --key a
   ```
 - 触发快照（可选）：
   ```bash
