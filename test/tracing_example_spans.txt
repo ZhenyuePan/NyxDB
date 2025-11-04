@@ -1,0 +1,136 @@
+raft2025/10/21 19:18:37 INFO: 100000001 switched to configuration voters=()
+raft2025/10/21 19:18:37 INFO: 100000001 became follower at term 0
+raft2025/10/21 19:18:37 INFO: newRaft 100000001 [peers: [], term: 0, commit: 0, applied: 0, lastindex: 0, lastterm: 0]
+raft2025/10/21 19:18:37 INFO: 100000001 became follower at term 1
+raft2025/10/21 19:18:37 INFO: 100000001 switched to configuration voters=(4294967297)
+raft2025/10/21 19:18:37 INFO: 100000001 switched to configuration voters=(4294967297)
+raft2025/10/21 19:18:38 INFO: 100000001 is starting a new election at term 1
+raft2025/10/21 19:18:38 INFO: 100000001 became pre-candidate at term 1
+raft2025/10/21 19:18:38 INFO: 100000001 received MsgPreVoteResp from 100000001 at term 1
+raft2025/10/21 19:18:38 INFO: 100000001 became candidate at term 2
+raft2025/10/21 19:18:38 INFO: 100000001 received MsgVoteResp from 100000001 at term 2
+raft2025/10/21 19:18:38 INFO: 100000001 became leader at term 2
+raft2025/10/21 19:18:38 INFO: raft.node: 100000001 elected leader 100000001 at term 2
+{
+	"Name": "nyxdb.api.KV/Put",
+	"SpanContext": {
+		"TraceID": "215241efd5b6b36e6bd04c0f30e871d9",
+		"SpanID": "c82a9b4500bc0d8d",
+		"TraceFlags": "01",
+		"TraceState": "",
+		"Remote": false
+	},
+	"Parent": {
+		"TraceID": "00000000000000000000000000000000",
+		"SpanID": "0000000000000000",
+		"TraceFlags": "00",
+		"TraceState": "",
+		"Remote": true
+	},
+	"SpanKind": 2,
+	"StartTime": "2025-10-21T19:18:40.806491283+08:00",
+	"EndTime": "2025-10-21T19:18:40.806612145+08:00",
+	"Attributes": [
+		{
+			"Key": "rpc.system",
+			"Value": {
+				"Type": "STRING",
+				"Value": "grpc"
+			}
+		},
+		{
+			"Key": "rpc.service",
+			"Value": {
+				"Type": "STRING",
+				"Value": "nyxdb.api.KV"
+			}
+		},
+		{
+			"Key": "rpc.method",
+			"Value": {
+				"Type": "STRING",
+				"Value": "Put"
+			}
+		},
+		{
+			"Key": "net.sock.peer.addr",
+			"Value": {
+				"Type": "STRING",
+				"Value": "127.0.0.1"
+			}
+		},
+		{
+			"Key": "net.sock.peer.port",
+			"Value": {
+				"Type": "INT64",
+				"Value": 51072
+			}
+		},
+		{
+			"Key": "rpc.grpc.status_code",
+			"Value": {
+				"Type": "INT64",
+				"Value": 0
+			}
+		}
+	],
+	"Events": null,
+	"Links": null,
+	"Status": {
+		"Code": "Unset",
+		"Description": ""
+	},
+	"DroppedAttributes": 0,
+	"DroppedEvents": 0,
+	"DroppedLinks": 0,
+	"ChildSpanCount": 0,
+	"Resource": [
+		{
+			"Key": "library.language",
+			"Value": {
+				"Type": "STRING",
+				"Value": "go"
+			}
+		},
+		{
+			"Key": "service.name",
+			"Value": {
+				"Type": "STRING",
+				"Value": "nyxdb-tracing-demo"
+			}
+		},
+		{
+			"Key": "telemetry.sdk.language",
+			"Value": {
+				"Type": "STRING",
+				"Value": "go"
+			}
+		},
+		{
+			"Key": "telemetry.sdk.name",
+			"Value": {
+				"Type": "STRING",
+				"Value": "opentelemetry"
+			}
+		},
+		{
+			"Key": "telemetry.sdk.version",
+			"Value": {
+				"Type": "STRING",
+				"Value": "1.38.0"
+			}
+		}
+	],
+	"InstrumentationScope": {
+		"Name": "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+		"Version": "0.53.0",
+		"SchemaURL": "",
+		"Attributes": null
+	},
+	"InstrumentationLibrary": {
+		"Name": "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+		"Version": "0.53.0",
+		"SchemaURL": "",
+		"Attributes": null
+	}
+}

@@ -1,7 +1,0 @@
-# Benchmark: Cluster single vs multi region
-# Command: LOG_LEVEL=error go test ./benchmark/cluster -bench BenchmarkCluster -benchmem -run ^$
-# Platform: linux/amd64, Intel(R) Core(TM) i7-14700
-BenchmarkClusterPutSingleRegion-8      378    3.62 ms/op   3.45 KB/op   57 allocs/op
-BenchmarkClusterPutMultiRegion-8       350    3.39 ms/op   4.06 KB/op   67 allocs/op
-BenchmarkClusterGetSingleRegion-8   1,002,990  1.19 µs/op  495 B/op     9 allocs/op
-BenchmarkClusterGetMultiRegion-8    1,007,952  1.19 µs/op  490 B/op     9 allocs/op

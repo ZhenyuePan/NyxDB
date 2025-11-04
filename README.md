@@ -1,109 +1,120 @@
-# NyxDB · Minimal MVP (Strongly‑Consistent KV)
+# NyxDB
 
-NyxDB 当前聚焦一个可运行的最小 MVP：单 Raft Group 的强一致 KV 存储，支持线性一致读、快照/截断、成员管理与基础健康检查。PD 调度、多 Region 与分布式事务是下一阶段目标。
+English | [简体中文](README.zh-CN.md)
 
-**开箱即用：默认关闭可选依赖（PD、Prometheus）→ 一条命令起服务，CLI 直接读写。**
-
----
-
-**你可以做什么**
-- 强一致写：写入通过 Raft 提案，多数派持久化后提交。
-- 线性一致读：ReadIndex + WaitApplied 确保读取到最新提交点。
-- 快照与截断：手动/自动快照，按阈值与时间间隔控制日志增长。
-- 成员管理：Join/Leave/Members，成员落盘、重启恢复。
-- 健康探针：gRPC Health；Prometheus 可按需开启。
+NyxDB is a strongly consistent key–value database that packages a Raft-based cluster, a multi-version Bitcask engine, and operational tooling into a single Go project. It is designed as an experimental data platform skeleton: bring a binary online in seconds, grow it into a multi-region deployment, and iterate on high-level features such as transactions or scheduling without rebuilding the plumbing.
 
 ---
 
-**快速开始**
-- 需求：Go 1.21+（仅当重新生成 gRPC 代码时需要 `protoc`）
-- 启动服务：
+## Why NyxDB?
+- **Linearizable semantics by default** – every write is replicated through etcd/raft and acknowledged only after a quorum persists it.
+- **Snapshot-aware storage** – the embedded MVCC engine supports fast point-in-time reads and log truncation via manual or automatic snapshots.
+- **Operational guardrails** – health probes, membership management, and disk-backed metadata allow clusters to restart cleanly without external coordination.
+- **Batteries included CLI** – a single `nyxdb-cli` handles KV mutations, admin operations, and snapshot triggers with transparent leader redirection.
+- **Optional control plane** – wire up the PD prototype to experiment with store/region heartbeats, scheduling decisions, and observability when you need them.
+
+---
+
+## Feature Overview
+| Capability | Details |
+| --- | --- |
+| Consistency | Raft replication, linearizable reads via ReadIndex + WaitApplied |
+| Storage | Append-only Bitcask layout with MVCC metadata, per-key version chains |
+| Snapshots | Manual trigger via CLI, auto snapshots governed by interval and entry thresholds |
+| Membership | Join/Leave, persisted membership list, automatic leader election on restart |
+| Transport | gRPC streaming transport for Raft messages plus built-in health RPC |
+| Observability | Optional Prometheus `/metrics`, diagnostics logging toggle |
+| Tooling | CLI for KV and admin, example configs for single-node or multi-node labs |
+
+---
+
+## Quickstart
+
+### Prerequisites
+- Go 1.21 or newer.
+- `protoc` only required if you regenerate gRPC bindings (`scripts/genproto.sh`).
+
+### Run a single node
+```bash
+go run cmd/nyxdb-server/main.go -config configs/server.single.yaml
+```
+
+### Interact with the cluster
+```bash
+# linearizable write/read
+go run cmd/nyxdb-cli/main.go kv put --addr 127.0.0.1:10001 --key greeting --value hello
+go run cmd/nyxdb-cli/main.go kv get --addr 127.0.0.1:10001 --key greeting
+
+# optional snapshot
+go run cmd/nyxdb-cli/main.go admin snapshot --addr 127.0.0.1:10001 --force
+```
+
+To simulate multiple replicas, duplicate the provided config, assign unique data directories and `grpc.address` values, then launch each node with `go run` or `go build`.
+
+### Optional services
+- **PD prototype** (control plane):
   ```bash
-  # 单节点快速体验
-  go run cmd/nyxdb-server/main.go -config configs/server.single.yaml
+  go run cmd/nyxdb-pd/main.go -addr 0.0.0.0:18080 -data /tmp/nyxdb-pd
   ```
-  > 若要模拟多节点，请为每个节点准备独立的数据目录与配置，参考 `configs/server.example.yaml` 中的多副本地址列表。
-- 写入/读取（线性一致）：
-  ```bash
-  go run cmd/nyxdb-cli/main.go kv put --addr 127.0.0.1:10001 --key a --value b
-  go run cmd/nyxdb-cli/main.go kv get --addr 127.0.0.1:10001 --key a
-  ```
-- 触发快照（可选）：
-  ```bash
-  nyxdb-cli admin snapshot --addr 127.0.0.1:10001 --force
-  ```
-
-> 默认配置中 `pd.address=""`、`observability.metricsAddress=""`，无需额外进程即可启动；当你需要 PD/指标时再填地址即可。
+  Fill `pd.address` in the server config to enable store/region heartbeats.
+- **Prometheus metrics**: set `observability.metricsAddress` to e.g. `127.0.0.1:2112` to expose `/metrics`.
 
 ---
 
-**最小配置（摘自 configs/server.example.yaml）**
-- `cluster.autoSnapshot`: 启用自动快照
-- `cluster.snapshotInterval / snapshotThreshold`: 快照触发的时间/entries 阈值
-- `grpc.address`: gRPC 服务地址（CLI 连接所用）
-- `pd.address`: 为空则禁用 PD；需要时填 `host:port`
-- `observability.metricsAddress`: 为空则禁用 Prometheus；需要时填 `host:port`
+## Architecture at a Glance
+- **Cluster manager (`internal/cluster`)** – wraps Raft, coordinates proposals, manages membership, and orchestrates snapshots.
+- **Raft layer (`internal/layers/raft`)** – etcd/raft integration with custom storage, transport abstractions, and ReadIndex helpers.
+- **Storage engine (`internal/layers/engine`)** – Bitcask-inspired append-only files with MVCC metadata, skiplist/B-tree/ART indexes, and optional group commit.
+- **Transaction experiments (`internal/layers/txn`)** – Percolator-style MVCC prototypes and replication appliers.
+- **Control plane (`internal/layers/pd`)** – lightweight scheduler prototype backed by BoltDB.
+- **Server & CLI (`cmd/nyxdb-server`, `cmd/nyxdb-cli`)** – gRPC services, health reporting, and operational commands.
+
+Additional design notes live in `docs/architecture.mdx` and `docs/development_status.md`.
 
 ---
 
-**命令行（CLI）**
-- KV：`kv put/get/delete`
-- 只读事务：`kv begin/read/end`（引擎快照读）
-- 管理：`admin members/join/leave/snapshot/merge`
+## Benchmarks
+Local measurements (Intel i7-14700, Go 1.21, Ubuntu) provide a baseline for experimentation. Full results are stored under `test_result/`.
 
-遇到 `not leader` 时，服务端会返回 `leader=<addr>` 提示，CLI 会自动重试到 Leader（只对幂等/读请求生效）。
+| Scenario | Throughput / Latency |
+| --- | --- |
+| Engine PUT (1 KB value, no fsync) | ~183K ops/s · 6.8 µs/op [[details]](test_result/benchmark.txt) |
+| Engine GET (hot key) | ~4.1M ops/s · 287 ns/op [[details]](test_result/benchmark.txt) |
+| Cluster PUT (single region) | ~330 ops/s · 3.6 ms/op [[details]](test_result/benchmark_cluster.txt) |
+| Cluster GET (prefilled) | ~680K ops/s · 1.7 µs/op [[details]](test_result/benchmark_cluster.txt) |
 
----
-
-**实现要点（怎么工作的）**
-- 写入：`KV/Put` → `internal/cluster/manager.go:Propose` → Raft → 提交后 `internal/layers/txn/replication.Applier` 写入引擎。
-- 读取：`KV/Get` → `Node.ReadIndex`（`internal/layers/raft/node/node.go:ReadIndex`）→ `Node.WaitApplied` → 引擎 `DB.Get`。
-- 快照：`Cluster.TriggerSnapshot`（`internal/cluster/manager.go:612`）打包引擎目录，持久到 `internal/layers/raft/storage`，并按 catch‑up 窗口截断日志；Follower 收到 Snapshot 自动恢复并 reopen 引擎。
-- 传输：gRPC RaftTransport（`internal/layers/raft/transport/transport_grpc.go`）。
-- 健康：`grpc_health_v1`（`internal/server/grpc/server.go`）。
+> Numbers emphasize baseline behaviour; enabling fsync, networking, or PD will change outcomes. Use the bundled `go test -bench` suites under `benchmark/` to reproduce and extend measurements.
 
 ---
 
-**目录结构（简）**
-- `cmd/nyxdb-server`：服务入口
-- `cmd/nyxdb-cli`：命令行工具
-- `internal/cluster`：读写入口、成员管理、快照/自动化
-- `internal/layers/raft/node`：etcd/raft 封装（Ready/Apply/ReadIndex）
-- `internal/layers/raft/storage`：自研 Raft 持久化
-- `internal/layers/raft/transport`：传输抽象与 gRPC 实现
-- `internal/layers/engine`：Bitcask+MVCC 引擎
-- `internal/server/grpc`：KV/Admin gRPC
-- `internal/layers/pd`：PD 原型（bbolt 持久化，默认不开）
-- `pkg/api`：gRPC 生成代码
+## Roadmap
+- **Near term**
+  - Harden Raft lifecycle: chunked snapshot streaming, leader transfer, backpressure.
+  - Expand observability: richer CLI inspection, metrics dashboards, tracing hooks.
+  - Optimize engine writes: reduce encode allocations, optional zero-copy paths.
+- **Mid term**
+  - Multi-region routing with PD-driven placement.
+  - Automated rebalancing: store/region scheduling, split/merge workflows.
+  - Read leases and follower reads for low-latency workloads.
+- **Long term**
+  - Distributed transactions (Percolator-style), lock conflict handling, recovery tooling.
+  - SQL or document-layer prototypes atop the KV API.
+
+Progress and open discussions live in `docs/development_status.md`; contributions and ideas are welcome.
 
 ---
 
-**可选组件（默认关闭）**
-- PD（控制面原型）：
-  - 启动：`go run cmd/nyxdb-pd/main.go -addr 0.0.0.0:18080 -data /tmp/nyxdb-pd`
-  - 节点：在配置中填写 `pd.address` 后，节点会自动上报 Store/Region 心跳
-  - API：`PD/ListStores`、`PD/GetRegionByKey`（便于观测与路由）
-- Prometheus 指标：设置 `observability.metricsAddress: 127.0.0.1:2112` 后暴露 `/metrics`
+## Repository Layout
+- `cmd/nyxdb-server` – main server binary.
+- `cmd/nyxdb-cli` – CLI for KV/admin operations.
+- `internal/` – engine, Raft integration, cluster manager, PD prototype.
+- `benchmark/` – micro and cluster benchmarks.
+- `configs/` – ready-to-use server configuration examples.
+- `docs/` – architecture notes, development status, deep dives.
+- `examples/` – small programs demonstrating MVCC reads and client usage.
+- `scripts/` – tooling (protobuf generation, bench helpers).
 
 ---
 
-**后续路线（分布式托底 + 能力演进）**
-- 托底：
-  - 联合共识（ConfChangeV2），Leader Transfer；
-  - 快照分块/限速与应用前校验；
-  - Leader‑Lease 快读、Propose/Apply 背压、慢副本限速。
-- 调度（PD）：
-  - Region/Store 视图与 epoch；Add/Remove/Transfer/Split/Merge 调度闭环；
-  - 多 Region 路由（KV 根据 key 选择 Region Leader）。
-- 事务：
-  - 时间戳服务；2PC（Prewrite/Commit/ResolveLock），锁冲突处理与恢复；
-  - 跨 Region 快照读与简单 DML。
-
----
-
-**测试**
-- 全量：`go test ./...`
-- 仅集群：`go test ./internal/cluster -run TestCluster`
-- Chaos/快照追赶：`internal/cluster/cluster_integration_test.go`
-
-欢迎就 PD 调度、多 Region、分布式事务与观测一起讨论与共建。
+## Contributing
+NyxDB is rapidly evolving. Bug reports, benchmark results, and design discussions are all valuable. Feel free to open an issue or PR, or reach out with ideas for extending the control plane, storage engine, or transaction layer.
