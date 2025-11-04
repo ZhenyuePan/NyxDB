@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.4.0
 // - protoc             v3.6.1
-// source: raft.proto
+// source: nyxdb/api/raft.proto
 
 package api
 
@@ -140,5 +140,5 @@ var RaftTransport_ServiceDesc = grpc.ServiceDesc{
 			ClientStreams: true,
 		},
 	},
-	Metadata: "raft.proto",
+	Metadata: "nyxdb/api/raft.proto",
 }

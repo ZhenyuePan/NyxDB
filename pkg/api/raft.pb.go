@@ -2,13 +2,15 @@
 // versions:
 // 	protoc-gen-go v1.33.0
 // 	protoc        v3.6.1
-// source: raft.proto
+// source: nyxdb/api/raft.proto
 
 package api
 
 import (
+	proto "google.golang.org/protobuf/proto"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	descriptorpb "google.golang.org/protobuf/types/descriptorpb"
 	reflect "reflect"
 	sync "sync"
 )
@@ -155,6 +157,25 @@ var (
 	file_raft_proto_rawDescOnce sync.Once
 	file_raft_proto_rawDescData = file_raft_proto_rawDesc
 )
+
+func init() {
+	patched := file_raft_proto_patchRawDesc(file_raft_proto_rawDesc)
+	file_raft_proto_rawDesc = patched
+	file_raft_proto_rawDescData = patched
+}
+
+func file_raft_proto_patchRawDesc(raw []byte) []byte {
+	fd := &descriptorpb.FileDescriptorProto{}
+	if err := proto.Unmarshal(raw, fd); err != nil {
+		panic(err)
+	}
+	fd.Name = proto.String("nyxdb/api/raft.proto")
+	out, err := proto.Marshal(fd)
+	if err != nil {
+		panic(err)
+	}
+	return out
+}
 
 func file_raft_proto_rawDescGZIP() []byte {
 	file_raft_proto_rawDescOnce.Do(func() {
