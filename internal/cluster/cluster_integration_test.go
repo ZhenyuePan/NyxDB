@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"math/rand"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,9 +23,31 @@ import (
 	regionpkg "nyxdb/internal/region"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
 	"google.golang.org/grpc"
 )
+
+func TestMain(m *testing.M) {
+	log.SetOutput(io.Discard)
+	raft.SetLogger(&raft.DefaultLogger{Logger: log.New(io.Discard, "", 0)})
+	cleanupResidualClusterDirs()
+	os.Exit(m.Run())
+}
+
+func cleanupResidualClusterDirs() {
+	tmp := os.TempDir()
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, "TestCluster") || strings.HasPrefix(name, "nyxdb-cluster") {
+			_ = os.RemoveAll(filepath.Join(tmp, name))
+		}
+	}
+}
 
 type testClusterHandle struct {
 	Cluster *Cluster

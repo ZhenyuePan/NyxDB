@@ -123,6 +123,37 @@ func (df *DataFile) ReadLogRecord(offset int64) (*LogEntry, int64, error) {
 	return entry, recordSize, nil
 }
 
+// ReadLogEntryMeta reads only the logical header of a log record located at the
+// provided offset. It returns the metadata, record type, and header size without
+// touching the key/value payload. Callers can use this to traverse version chains
+// cheaply before fetching the full record when needed.
+func (df *DataFile) ReadLogEntryMeta(offset int64) (LogMeta, LogRecordType, int64, error) {
+	fileSize, err := df.IoManager.Size()
+	if err != nil {
+		return LogMeta{}, 0, 0, err
+	}
+
+	var headerBytes int64 = maxLogRecordHeaderSize
+	if offset+maxLogRecordHeaderSize > fileSize {
+		headerBytes = fileSize - offset
+	}
+
+	headerBuf, err := df.readNBytes(headerBytes, offset)
+	if err != nil {
+		return LogMeta{}, 0, 0, err
+	}
+
+	header, headerSize := decodeLogRecordHeader(headerBuf)
+	if header == nil {
+		return LogMeta{}, 0, 0, io.EOF
+	}
+	if header.crc == 0 && header.keySize == 0 && header.valueSize == 0 {
+		return LogMeta{}, 0, 0, io.EOF
+	}
+
+	return header.meta, header.recordType, headerSize, nil
+}
+
 func (df *DataFile) Write(buf []byte) error {
 	n, err := df.IoManager.Write(buf)
 	if err != nil {

@@ -5,10 +5,11 @@ import (
 	"path/filepath"
 	"testing"
 
+	raftstorage "nyxdb/internal/layers/raft/storage"
+
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
-	raftstorage "nyxdb/internal/layers/raft/storage"
 )
 
 func TestStorageAppendAndPersist(t *testing.T) {

@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package nyxdb.api;
+
+option go_package = "nyxdb/pkg/api";
+
+import "common.proto";
+
+message StoreHeartbeatProto {
+  uint64 store_id = 1;
+  string address = 2;
+  repeated RegionReplicaDescriptor regions = 3;
+  int64 timestamp_ms = 4;
+}
+
+message StoreHeartbeatRequest {
+  StoreHeartbeatProto heartbeat = 1;
+}
+
+message StoreHeartbeatResponse {}
+
+message ListStoresRequest {}
+
+message ListStoresResponse {
+  repeated StoreHeartbeatProto stores = 1;
+}
+
+message GetRegionByKeyRequest {
+  bytes key = 1;
+}
+
+message GetRegionByKeyResponse {
+  RegionDescriptor region = 1;
+  repeated RegionReplicaDescriptor replicas = 2;
+}
+
+message GetRegionRequest {
+  uint64 region_id = 1;
+}
+
+message GetRegionResponse {
+  RegionSnapshot snapshot = 1;
+}
+
+message ListRegionsRequest {}
+
+message ListRegionsResponse {
+  repeated RegionSnapshot snapshots = 1;
+}
+
+message GetRegionsByStoreRequest {
+  uint64 store_id = 1;
+}
+
+message GetRegionsByStoreResponse {
+  repeated RegionSnapshot snapshots = 1;
+}
+
+message RegisterRegionRequest {
+  RegionMetadata metadata = 1;
+}
+
+message RegisterRegionResponse {
+  RegionMetadata metadata = 1;
+}
+
+message UpdateRegionRequest {
+  RegionMetadata metadata = 1;
+}
+
+message UpdateRegionResponse {
+  RegionMetadata metadata = 1;
+}
+
+message AllocateTimestampRequest {
+  uint32 count = 1;
+}
+
+message AllocateTimestampResponse {
+  uint64 base_ts = 1;
+  uint32 count = 2;
+}
+
+service PD {
+  rpc StoreHeartbeat(StoreHeartbeatRequest) returns (StoreHeartbeatResponse);
+  rpc RegisterRegion(RegisterRegionRequest) returns (RegisterRegionResponse);
+  rpc UpdateRegion(UpdateRegionRequest) returns (UpdateRegionResponse);
+  rpc ListStores(ListStoresRequest) returns (ListStoresResponse);
+  rpc GetRegionByKey(GetRegionByKeyRequest) returns (GetRegionByKeyResponse);
+  rpc GetRegion(GetRegionRequest) returns (GetRegionResponse);
+  rpc ListRegions(ListRegionsRequest) returns (ListRegionsResponse);
+  rpc GetRegionsByStore(GetRegionsByStoreRequest)
+      returns (GetRegionsByStoreResponse);
+  rpc AllocateTimestamp(AllocateTimestampRequest)
+      returns (AllocateTimestampResponse);
+}

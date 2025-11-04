@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package nyxdb.api;
+
+option go_package = "nyxdb/pkg/api";
+
+import "common.proto";
+
+message JoinRequest {
+  uint64 node_id = 1;
+  string address = 2;
+}
+
+message JoinResponse {}
+
+message LeaveRequest {
+  uint64 node_id = 1;
+}
+
+message LeaveResponse {}
+
+message MembersRequest {}
+
+message Member {
+  uint64 node_id = 1;
+  string address = 2;
+}
+
+message MembersResponse {
+  repeated Member members = 1;
+}
+
+message TriggerMergeRequest {
+  bool force = 1;
+}
+
+message TriggerMergeResponse {}
+
+message TriggerSnapshotRequest {
+  bool force = 1;
+}
+
+message TriggerSnapshotResponse {}
+
+message SnapshotStatusRequest {}
+
+message SnapshotStatusResponse {
+  bool in_progress = 1;
+  uint64 last_snapshot_index = 2;
+  uint64 entries_since = 3;
+  int64 last_snapshot_time_unix = 4;
+  int64 in_progress_since_unix = 5;
+  string leader = 6;
+  uint64 applied_index = 7;
+  uint64 last_raft_index = 8;
+  int64 last_snapshot_duration_ms = 9;
+  uint64 last_snapshot_size_bytes = 10;
+}
+
+message CreateRegionReplicaRequest {
+  RegionDescriptor region = 1;
+}
+
+message CreateRegionReplicaResponse {}
+
+message DeleteRegionReplicaRequest {
+  uint64 region_id = 1;
+}
+
+message DeleteRegionReplicaResponse {}
+
+service Admin {
+  rpc Join(JoinRequest) returns (JoinResponse);
+  rpc Leave(LeaveRequest) returns (LeaveResponse);
+  rpc Members(MembersRequest) returns (MembersResponse);
+  rpc TriggerMerge(TriggerMergeRequest) returns (TriggerMergeResponse);
+  rpc TriggerSnapshot(TriggerSnapshotRequest) returns (TriggerSnapshotResponse);
+  rpc SnapshotStatus(SnapshotStatusRequest) returns (SnapshotStatusResponse);
+  rpc CreateRegionReplica(CreateRegionReplicaRequest)
+      returns (CreateRegionReplicaResponse);
+  rpc DeleteRegionReplica(DeleteRegionReplicaRequest)
+      returns (DeleteRegionReplicaResponse);
+}

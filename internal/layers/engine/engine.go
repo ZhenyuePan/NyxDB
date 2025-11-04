@@ -480,6 +480,31 @@ func (rt *ReadTxn) Get(key []byte) ([]byte, error) {
 	return rt.db.getValueForReadTs(key, rt.inner.ts)
 }
 
+func (db *DB) readLogEntryMeta(pos *data.LogRecordPos) (data.LogMeta, data.LogRecordType, error) {
+	if pos == nil {
+		return data.LogMeta{}, 0, ErrDataFileNotFound
+	}
+
+	db.mu.RLock()
+	var dataFile *data.DataFile
+	if db.activeFile != nil && db.activeFile.FileId == pos.Fid {
+		dataFile = db.activeFile
+	} else {
+		dataFile = db.olderFiles[pos.Fid]
+	}
+	db.mu.RUnlock()
+
+	if dataFile == nil {
+		return data.LogMeta{}, 0, ErrDataFileNotFound
+	}
+
+	meta, recordType, _, err := dataFile.ReadLogEntryMeta(pos.Offset)
+	if err != nil {
+		return data.LogMeta{}, 0, err
+	}
+	return meta, recordType, nil
+}
+
 func (db *DB) readLogEntry(pos *data.LogRecordPos) (*data.LogEntry, error) {
 	db.mu.RLock()
 	var dataFile *data.DataFile
@@ -505,36 +530,43 @@ func (db *DB) getValueByPositionWithReadTs(logRecordPos *data.LogRecordPos, read
 	current := logRecordPos
 	visited := 0
 	for current != nil {
-		entry, err := db.readLogEntry(current)
+		meta, recordType, err := db.readLogEntryMeta(current)
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil, ErrKeyNotFound
+			}
 			return nil, err
 		}
 
-		commitTs := entry.Meta.CommitTs
+		commitTs := meta.CommitTs
 		if commitTs == 0 || commitTs <= readTs {
-			if entry.Record.Type == data.LogRecordDeleted {
+			if recordType == data.LogRecordDeleted {
 				return nil, ErrKeyNotFound
+			}
+			entry, err := db.readLogEntry(current)
+			if err != nil {
+				return nil, err
 			}
 			return entry.Record.Value, nil
 		}
 
-		if entry.Meta.PrevOffset < 0 {
+		if meta.PrevOffset < 0 {
 			return nil, ErrKeyNotFound
 		}
 
-		nextFid := entry.Meta.PrevFid
+		nextFid := meta.PrevFid
 		if nextFid == 0 {
 			nextFid = current.Fid
 		}
 
-		if nextFid == current.Fid && entry.Meta.PrevOffset == current.Offset {
+		if nextFid == current.Fid && meta.PrevOffset == current.Offset {
 			// 避免意外循环
 			return nil, ErrKeyNotFound
 		}
 
 		current = &data.LogRecordPos{
 			Fid:    nextFid,
-			Offset: entry.Meta.PrevOffset,
+			Offset: meta.PrevOffset,
 			Size:   0,
 		}
 

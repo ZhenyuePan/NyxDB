@@ -110,3 +110,33 @@ func TestDataFile_ReadLogRecord(t *testing.T) {
 	assert.Equal(t, rec3.Meta, readRec3.Meta)
 	assert.Equal(t, size3, readSize3)
 }
+
+func TestDataFile_ReadLogEntryMeta(t *testing.T) {
+	dir := t.TempDir()
+	dataFile, err := OpenDataFile(dir, 7777, fio.StandardFIO)
+	assert.Nil(t, err)
+	assert.NotNil(t, dataFile)
+	defer dataFile.Close()
+
+	entry := &LogEntry{
+		Record: LogRecord{
+			Key:   []byte("meta-key"),
+			Value: []byte("meta-value"),
+			Type:  LogRecordNormal,
+		},
+		Meta: LogMeta{
+			CommitTs:   42,
+			PrevFid:    7,
+			PrevOffset: 123,
+		},
+	}
+	encoded, _ := EncodeLogEntry(entry)
+	err = dataFile.Write(encoded)
+	assert.Nil(t, err)
+
+	meta, recordType, headerSize, err := dataFile.ReadLogEntryMeta(0)
+	assert.Nil(t, err)
+	assert.Equal(t, entry.Meta, meta)
+	assert.Equal(t, entry.Record.Type, recordType)
+	assert.Greater(t, headerSize, int64(0))
+}
