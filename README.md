@@ -2,7 +2,15 @@
 
 English | [简体中文](README.zh-CN.md)
 
-NyxDB is a strongly consistent key–value database that packages a Raft-based cluster, a multi-version Bitcask engine, and operational tooling into a single Go project. It is designed as an experimental data platform skeleton: bring a binary online in seconds, grow it into a multi-region deployment, and iterate on high-level features such as transactions or scheduling without rebuilding the plumbing.
+```
+N   N  Y   Y  X   X  DDDD   BBBB 
+NN  N   Y Y    X X   D   D  B   B
+N N N    Y      X    D   D  BBBB 
+N  NN    Y     X X   D   D  B   B
+N   N    Y    X   X  DDDD   BBBB 
+```
+
+NyxDB is an embeddable, trim, strongly consistent key‑value store. It uses etcd/raft for linearizable replication and a Bitcask‑style append‑only engine with MVCC for snapshot‑friendly durability and point‑in‑time recovery. A single‑port gRPC surface (KV/Admin/Raft) with zero hard external deps lets you spin up on a laptop or a 3‑node cluster in seconds. For different workloads, NyxDB offers pluggable indexes and tunable write durability/latency knobs (Group Commit, BytesPerSync, SyncWrites), and can optionally attach a PD control plane for multi‑region management and scheduling. It fits microservice embedding, edge/private small clusters, platform metadata, and job/checkpoint state that demand consistency and recoverability.
 
 ---
 
@@ -12,6 +20,24 @@ NyxDB is a strongly consistent key–value database that packages a Raft-based c
 - **Operational guardrails** – health probes, membership management, and disk-backed metadata allow clusters to restart cleanly without external coordination.
 - **Batteries included CLI** – a single `nyxdb-cli` handles KV mutations, admin operations, and snapshot triggers with transparent leader redirection.
 - **Optional control plane** – wire up the PD prototype to experiment with store/region heartbeats, scheduling decisions, and observability when you need them.
+
+## Relation to etcd
+- Similarities:
+  - Majority replication via etcd/raft; linearizable reads/writes;
+  - MVCC semantics for snapshot reads and point-in-time visibility;
+  - Snapshots/truncation and membership management.
+- Differences (NyxDB’s focus):
+  - Storage layout: Bitcask‑style append‑only with per‑key version chains (`CommitTs + Prev*`) for simpler, predictable I/O;
+  - Write control: first‑class group commit (`MaxBatchEntries/MaxBatchBytes/MaxWait`) and `BytesPerSync/SyncWrites` knobs to balance latency vs durability;
+  - Pluggable indexes: B‑Tree/SkipList/ART/Sharded‑BTree selectable per workload;
+  - Embeddable: single‑port gRPC (KV/Admin/RaftTransport) with light deps, suited to in‑process use or small/edge clusters;
+  - Optional control plane: PD is optional; the system is not positioned as a “big control plane” by default.
+- Prefer NyxDB when:
+  - You need an embeddable, trim strong‑consistency KV base;
+  - You want fine‑grained control over write durability/latency (group commit, sync policy, index choices);
+  - You target small clusters/edge/local‑first scenarios.
+- Prefer etcd when:
+  - You need a battle‑tested general‑purpose control‑plane KV with a mature ecosystem and full features (watch/leases, etc.).
 
 ---
 
@@ -62,14 +88,56 @@ To simulate multiple replicas, duplicate the provided config, assign unique data
 ---
 
 ## Architecture at a Glance
-- **Cluster manager (`internal/cluster`)** – wraps Raft, coordinates proposals, manages membership, and orchestrates snapshots.
-- **Raft layer (`internal/layers/raft`)** – etcd/raft integration with custom storage, transport abstractions, and ReadIndex helpers.
-- **Storage engine (`internal/layers/engine`)** – Bitcask-inspired append-only files with MVCC metadata, skiplist/B-tree/ART indexes, and optional group commit.
-- **Transaction experiments (`internal/layers/txn`)** – Percolator-style MVCC prototypes and replication appliers.
-- **Control plane (`internal/layers/pd`)** – lightweight scheduler prototype backed by BoltDB.
-- **Server & CLI (`cmd/nyxdb-server`, `cmd/nyxdb-cli`)** – gRPC services, health reporting, and operational commands.
+- **Cluster manager (`internal/cluster`)** – wraps the etcd/raft node lifecycle (Start/Ready/Apply), drives proposals and linearizable reads (ReadIndex + WaitApplied), manages membership and regions, orchestrates snapshots, and serves as the coordination entry for KV/Admin.
+- **Raft layer (`internal/layers/raft`)**:
+  - `node`: integrates `raft.Node`, bridging storage and transport;
+  - `storage`: implements `raft.Storage` with log/snapshot persistence;
+  - `transport`: provides gRPC transport and a local Noop transport. The gRPC transport uses `pkg/api.RaftTransport` and is registered on the same gRPC server port.
+- **Storage engine (`internal/layers/engine`)** – Bitcask‑style (append‑only, not LSM). MVCC uses per‑key version chains (`CommitTs + PrevFid/PrevOffset`). Indexes: B‑Tree, SkipList, ART, and Sharded B‑Tree (default). Group commit (`MaxBatchEntries/MaxBatchBytes/MaxWait`), `BytesPerSync`, `SyncWrites`. Startup can use MMap; writes use standard file IO.
+- **Transactions & replication (`internal/layers/txn`)** – `replication` safely applies raft‑committed ops to the engine; `percolator` hosts local MVCC/transaction experiments (not a distributed transaction layer).
+- **Control plane (`internal/layers/pd`)** – in‑memory PD prototype with optional BoltDB persistence for region metadata; includes gRPC client/server.
+- **Server & CLI (`cmd/nyxdb-server`, `cmd/nyxdb-cli`)** – a single gRPC port hosts KV/Admin and RaftTransport with built‑in health checks; optional observability under `internal/layers/observability/*`.
 
-Additional design notes live in `docs/architecture.mdx` and `docs/development_status.md`.
+### ASCII Architecture
+
+```
+            +-------------------+                +----------------------+
+            |  Clients / CLI    |  gRPC (KV/Admin)|      PD (optional)  |
+            |  (nyxdb-cli)      |<---------------->|  store/region meta  |
+            +---------^---------+                +----------^-----------+
+                      |                                   |
+                      | gRPC (one port)                   |
+              +-------+--------+                          |
+              |   gRPC Server  |  registers              |
+              | (health+KV+PD) |<------------------------+
+              +-------+--------+
+                      |
+                      v
+              +-------+--------+     Raft msgs     +--------------------+
+              |  Cluster Mgr   |<----------------->|  Raft Transport    |
+              | (ReadIndex,    |                    |  (gRPC/Noop)      |
+              |  snapshots,    |                    +--------------------+
+              |  membership)   |
+              +-------+--------+
+                      |
+                      v
+              +-------+--------+
+              |    Raft Node   |
+              +-------+--------+
+                      |
+                      v
+              +-------+--------+        +-----------------+
+              |   Engine       |<------>|  In‑mem Index   |
+              | (Bitcask+MVCC) |        | (BTree/ART/...) |
+              +-------+--------+        +-----------------+
+                      |
+                      v
+              +-----------------+   files   +-----------------+
+              |  Data Files     |<--------->|   Hint / Merge  |
+              +-----------------+           +-----------------+
+```
+
+Additional design notes live in `docs/architecture.mdx`, `docs/development_status.md`, and the engine docs under `docs/engine/`.
 
 ---
 

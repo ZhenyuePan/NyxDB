@@ -338,7 +338,11 @@ func TestClusterMultiNodeMultipleRegions(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotLeader)
 
 	require.Eventually(t, func() bool {
-		return regionLeader.cluster.Put([]byte("z"), []byte("value-z")) == nil
+		leader := currentRegionLeader(nodes, regionmgr.DefaultRegionID)
+		if leader == nil {
+			return false
+		}
+		return leader.cluster.Put([]byte("z"), []byte("value-z")) == nil
 	}, 5*time.Second, 50*time.Millisecond)
 
 	for _, n := range nodes {
